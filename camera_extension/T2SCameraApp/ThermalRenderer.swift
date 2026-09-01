@@ -245,7 +245,8 @@ struct ThermalRenderer {
                  at: CGPoint(x: p.x + u(6), y: p.y - u(6)), size: u(11), color: .white)
         }
 
-        let label = String(format: "%@ %.1f/%.1f/%.1fC", m.name, r.minValue, r.average, r.maxValue)
+        let label = String(format: "%@ min %.1f  avg %.1f  med %.1f  max %.1fC",
+                           m.name, r.minValue, r.average, r.median, r.maxValue)
         var ly = Swift.max(a.y, b.y) + u(4)
         if ly > canvas.height - u(16) { ly = Swift.min(a.y, b.y) - u(16) }
         draw(text: label, in: ctx, at: CGPoint(x: Swift.min(a.x, b.x), y: ly),

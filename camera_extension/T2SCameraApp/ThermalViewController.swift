@@ -1,7 +1,7 @@
 import Cocoa
 
 /// The live thermal view, its measurement tools and the capture controls.
-final class ThermalViewController: NSViewController, NSMenuItemValidation {
+final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTextFieldDelegate {
 
     // Layout. The image keeps its native 858x576 render size; the panel on the
     // right holds the measurement list and capture controls.
@@ -207,6 +207,10 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
         f.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         f.target = self
         f.action = action
+        // NSTextField only sends its action on Return. Typing a value and
+        // clicking away left the setting untouched, which looked exactly like
+        // the field being ignored -- so take the value as it is typed too.
+        f.delegate = self
         return f
     }
 
@@ -303,11 +307,16 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
         linePointsField = numberField("3", x: 84, y: y, w: 36,
                                       action: #selector(linePointsChanged(_:)))
         panel.addSubview(linePointsField)
-        lineModeControl = NSSegmentedControl(labels: ["hottest", "coldest"],
+        panel.addSubview(label("points that are", x: 128, y: y + 4, w: 110))
+        y -= 28
+
+        lineModeControl = NSSegmentedControl(labels: ["hot", "cold", "avg", "med"],
                                              trackingMode: .selectOne, target: self,
                                              action: #selector(lineModeChanged(_:)))
-        lineModeControl.frame = NSRect(x: 128, y: y - 1, width: 150, height: 23)
+        lineModeControl.frame = NSRect(x: 12, y: y, width: W - 24, height: 23)
         lineModeControl.setSelected(true, forSegment: 0)
+        lineModeControl.toolTip = "hot/cold mark peaks; avg/med mark where the "
+            + "profile crosses its own average or median."
         panel.addSubview(lineModeControl)
         y -= 32
 
@@ -620,25 +629,40 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
     @objc private func noop(_ sender: Any?) {}
 
     @objc private func linePointsChanged(_ sender: Any?) {
-        let v = Int(linePointsField.stringValue) ?? lineExtremeCount
+        applyLinePoints(tidy: true)
+    }
+
+    private func applyLinePoints(tidy: Bool) {
+        guard let v = Int(linePointsField.stringValue.trimmingCharacters(in: .whitespaces)) else { return }
         lineExtremeCount = max(1, min(10, v))
+        guard tidy else { return }
         linePointsField.stringValue = String(lineExtremeCount)
     }
 
     @objc private func lineModeChanged(_ sender: NSSegmentedControl) {
-        lineExtremeMode = sender.selectedSegment == 0 ? .hottest : .coldest
+        lineExtremeMode = MeasurementEngine.ExtremeMode(rawValue: sender.selectedSegment) ?? .hottest
     }
 
     @objc private func changeThresholdChanged(_ sender: Any?) {
+        applyChangeThreshold(tidy: true)
+    }
+
+    private func applyChangeThreshold(tidy: Bool) {
         let v = Double(changeThresholdField.stringValue.replacingOccurrences(of: ",", with: "."))
         changeDetector.threshold = max(0.2, v ?? 2.0)
+        guard tidy else { return }
         changeThresholdField.stringValue = String(format: "%.1f", changeDetector.threshold)
     }
 
     @objc private func rangeFieldChanged(_ sender: Any?) {
+        applyRange(tidy: true)
+    }
+
+    private func applyRange(tidy: Bool) {
         manualMin = Double(minField.stringValue.replacingOccurrences(of: ",", with: ".")) ?? manualMin
         manualMax = Double(maxField.stringValue.replacingOccurrences(of: ",", with: ".")) ?? manualMax
         if manualMax <= manualMin { manualMax = manualMin + 1 }
+        guard tidy else { return }
         minField.stringValue = String(format: "%.1f", manualMin)
         maxField.stringValue = String(format: "%.1f", manualMax)
     }

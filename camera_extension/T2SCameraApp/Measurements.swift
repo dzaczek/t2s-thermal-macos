@@ -83,6 +83,8 @@ struct MeasurementResult {
     /// Line only: the N most prominent peaks (or troughs) along it, hottest or
     /// coldest first. Frame-wide pixel indices, with their temperature.
     var extrema: [(index: Int, value: Double)] = []
+    /// Line only. Robust against a single hot pixel in a way the mean is not.
+    var median: Double = 0
 
     static let zero = MeasurementResult(minValue: 0, maxValue: 0, average: 0,
                                         minIndex: 0, maxIndex: 0)
@@ -91,7 +93,8 @@ struct MeasurementResult {
 enum MeasurementEngine {
 
     /// What the N markers on a line should point at.
-    enum ExtremeMode { case hottest, coldest }
+    /// What the markers on a line point at.
+    enum ExtremeMode: Int { case hottest, coldest, average, median }
 
     static func evaluate(_ m: Measurement, temps: [Double], width: Int, height: Int,
                          lineExtremeCount: Int = 3,
@@ -142,11 +145,59 @@ enum MeasurementEngine {
             sum += v
         }
 
+        let mean = sum / Double(values.count)
+        let sorted = values.sorted()
+        let median = sorted.count % 2 == 1
+            ? sorted[sorted.count / 2]
+            : (sorted[sorted.count / 2 - 1] + sorted[sorted.count / 2]) / 2
+
+        let marks: [(index: Int, value: Double)]
+        switch mode {
+        case .hottest, .coldest:
+            marks = peaks(values, pixels: pixels, count: count, mode: mode)
+        case .average:
+            marks = crossings(values, pixels: pixels, target: mean, count: count)
+        case .median:
+            marks = crossings(values, pixels: pixels, target: median, count: count)
+        }
+
         return MeasurementResult(minValue: lo, maxValue: hi,
-                                 average: sum / Double(values.count),
+                                 average: mean,
                                  minIndex: loIdx, maxIndex: hiIdx,
-                                 extrema: peaks(values, pixels: pixels,
-                                                count: count, mode: mode))
+                                 extrema: marks,
+                                 median: median)
+    }
+
+    /// Where the profile crosses a value, which is what "mark the average"
+    /// has to mean: the N samples nearest the mean would all sit on the same
+    /// stretch of the line, whereas crossings are distinct places where the
+    /// profile actually passes through it.
+    private static func crossings(_ values: [Double], pixels: [Int],
+                                  target: Double, count: Int) -> [(index: Int, value: Double)] {
+        guard count > 0, values.count > 1 else { return [] }
+        var found: [(step: Int, index: Int, value: Double)] = []
+        // A strict sign change only. Counting a sample that merely sits *on*
+        // the target as a crossing turns a flat wall -- which is exactly where
+        // the median tends to land -- into a crossing at every single pixel.
+        func side(_ v: Double) -> Int {
+            v == target ? 0 : (v < target ? -1 : 1)
+        }
+        for i in 1..<values.count {
+            let a = side(values[i - 1]), b = side(values[i])
+            guard a != 0, b != 0, a != b else { continue }
+            let j = abs(values[i - 1] - target) <= abs(values[i] - target) ? i - 1 : i
+            found.append((j, pixels[j], values[j]))
+        }
+        if found.isEmpty {
+            // A profile entirely above or below the target never crosses it;
+            // fall back to whichever sample comes closest.
+            var best = 0
+            for i in values.indices where abs(values[i] - target) < abs(values[best] - target) {
+                best = i
+            }
+            found = [(best, pixels[best], values[best])]
+        }
+        return separate(found, sampleCount: values.count, count: count)
     }
 
     /// Picks the N most prominent local peaks (or troughs) along the profile.
@@ -186,9 +237,18 @@ enum MeasurementEngine {
         found.sort { mode == .hottest ? $0.value > $1.value : $0.value < $1.value }
 
         // Collapse a plateau: neighbouring samples of one feature all qualify.
-        // Keep markers visually apart: one feature spans several samples, and
-        // two markers a pixel apart are unreadable at any zoom.
-        let minSeparation = Swift.max(3, values.count / 40)
+        return separate(found, sampleCount: values.count, count: count)
+    }
+
+    /// Keeps markers visually apart: one feature spans several samples, and two
+    /// markers a pixel apart are unreadable at any zoom. Separation is measured
+    /// along the profile, not by frame pixel index -- on any line that is not
+    /// horizontal, consecutive samples differ by about a row width, so an index
+    /// test never fires.
+    private static func separate(_ found: [(step: Int, index: Int, value: Double)],
+                                 sampleCount: Int,
+                                 count: Int) -> [(index: Int, value: Double)] {
+        let minSeparation = Swift.max(3, sampleCount / 40)
         var kept: [(step: Int, index: Int, value: Double)] = []
         for candidate in found {
             let tooClose = kept.contains { abs($0.step - candidate.step) < minSeparation }

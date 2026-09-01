@@ -196,26 +196,39 @@ image spells out what the current setting does.
 - An **area** (`Ar1`, `Ar2`, ...) reports min / average / max, and marks where
   inside it the hottest and coldest pixels actually are -- an average alone
   hides a hot spot in the corner, which is usually what you are looking for.
-- A **line** (`Li1`, `Li2`, ...) is a profile: it reports min / average / max
-  along its length and marks the **N most prominent peaks** on it. Set how many
-  and whether to look for hot or cold ones with *Line: mark N hottest/coldest*
-  in the side panel.
+- A **line** (`Li1`, `Li2`, ...) is a profile: it reports min / average /
+  **median** / max along its length and marks **N points** on it. Set how many
+  and what they point at in the side panel:
+  - **hot** / **cold** — the N most prominent peaks or troughs
+  - **avg** / **med** — where the profile *crosses* its own average or median
+
+  The median is worth having next to the average: one hot pixel drags the mean
+  but not the median, so a large gap between them says the profile is
+  dominated by something small.
 - Selecting a row and setting **Emissivity** overrides it for that object only,
   for a scene with two materials in one frame (bare metal reads far too cold
   next to painted steel). Blank means "use the camera-wide value". The override
   is applied host-side; the camera keeps its own setting.
 
-#### Why "peaks" and not "the N highest samples"
+#### Why crossings for avg/median, and peaks for hot/cold
 
 Taking the N highest readings along a line is useless: they all land on the
-same hot spot, one pixel apart. The line tool looks for *local* extrema
-instead, so N markers mean N distinct features.
+same hot spot, one pixel apart. So **hot/cold** looks for *local* extrema, and
+**avg/med** marks where the profile crosses that value -- for those two,
+"nearest the average" would again pile every marker onto one stretch, whereas
+crossings are distinct places.
 
-Two details that matter in practice: a peak must be strictly better than at
-least one neighbour, or a flat wall reports every one of its pixels as a peak;
-and markers are spaced along the profile rather than by pixel index, because on
-any line that is not horizontal consecutive samples differ by about a row
-width, and a separation test on the index never fires.
+Three details that only showed up in testing:
+
+- A peak must be **strictly** better than at least one neighbour. Comparing
+  with `>=` on both sides made every pixel of a flat wall a peak, so asking
+  for 9 markers on a uniform surface returned 9 identical readings.
+- A crossing needs a **strict sign change**. Counting a sample that merely sits
+  on the target turned a flat wall -- exactly where the median tends to land --
+  into a crossing at every pixel.
+- Separation is measured **along the profile**, not by frame pixel index. On any
+  line that is not horizontal, consecutive samples differ by about a row width,
+  so an index test never fires and the markers pile onto one spot.
 
 If a profile has fewer distinct features than you asked for, you get fewer
 markers rather than invented ones.
