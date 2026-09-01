@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.system-extension.install</key>
+	<true/>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(TeamIdentifierPrefix)cat.sysop.t2scamera</string>
+	</array>
+	<!-- Sandboxed apps get no camera and no IOKit USB without these. Without
+	     the camera one, AVCaptureSession simply produces no frames and no
+	     error; the USB one is needed for the UVC control writes. -->
+	<key>com.apple.security.device.camera</key>
+	<true/>
+	<key>com.apple.security.device.usb</key>
+	<true/>
+	<!-- Photos, CSV exports and video go to ~/Pictures/T2S+ Thermal. Under the
+	     sandbox that write fails outright without this; there is no prompt. -->
+	<key>com.apple.security.assets.pictures.read-write</key>
+	<true/>
+</dict>
+</plist>

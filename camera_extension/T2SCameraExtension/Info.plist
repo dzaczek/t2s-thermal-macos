@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CMIOExtension</key>
+	<dict>
+		<key>CMIOExtensionMachServiceName</key>
+		<string>$(TeamIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	</dict>
+	<key>NSSystemExtensionUsageDescription</key>
+	<string>T2S+ Thermal Camera provides a virtual camera showing the live thermal feed from thermal_view.py.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>T2S+ Thermal Camera publishes the thermal image as a virtual camera.</string>
+</dict>
+</plist>

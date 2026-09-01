@@ -1,0 +1,15 @@
+# Copy to build.config and adjust. build.config is git-ignored, so your local
+# paths and credentials never reach the repository.
+
+# Xcode to build with. Defaults to `xcode-select -p`.
+# Point this at the Xcode your Apple ID is signed into if automatic signing
+# reports "No Account for Team".
+#T2S_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+
+# Signing team. Defaults to the first identity found in the keychain.
+#T2S_TEAM_ID="XXXXXXXXXX"
+
+# notarytool keychain profile, required by ./build.sh --release. Create with:
+#   xcrun notarytool store-credentials T2SCamera \
+#     --apple-id you@example.com --team-id XXXXXXXXXX --password <app-specific>
+#T2S_NOTARY_PROFILE="T2SCamera"

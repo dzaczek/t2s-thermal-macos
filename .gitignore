@@ -1,0 +1,23 @@
+# Build products
+camera_extension/.build/
+camera_extension/dist/
+camera_extension/T2SCamera.xcodeproj/
+vendor/uvc-util/build/
+
+# Local build settings: Xcode path, team, notarisation profile
+camera_extension/build.config
+
+# Per-machine build counter
+camera_extension/build_number.txt
+
+# Calibration solved against one specific camera and one set of conditions.
+# Shipping it would give someone else confident but wrong readings.
+shutter_offset.json
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
