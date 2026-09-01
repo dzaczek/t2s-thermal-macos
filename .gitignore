@@ -1,27 +1,78 @@
-# Build products
-camera_extension/.build/
-camera_extension/dist/
-camera_extension/T2SCamera.app/
-camera_extension/T2SCamera.xcodeproj/
-vendor/uvc-util/build/
+# Rules are deliberately unanchored where the artefact can appear in more than
+# one place: builds have already been run from the repository root, from
+# camera_extension/, and from git worktrees under .claude/, and a rule pinned to
+# one of those paths silently stops protecting the others.
 
-# Local build settings: Xcode path, team, notarisation profile
-camera_extension/build.config
+# --- Build products --------------------------------------------------------
+.build/
+dist/
+DerivedData/
+build/
+*.xcarchive
+*.app/
+*.dSYM/
+*.o
+*.hmap
 
-# Per-machine build counter
-camera_extension/build_number.txt
+# Generated from project.yml by xcodegen on every build; never edit or commit.
+*.xcodeproj/
+*.xcworkspace/
 
-# Calibration solved against one specific camera and one set of conditions.
+# --- Release artefacts -----------------------------------------------------
+# Distribution goes through GitHub Releases, not the repository: a disk image
+# committed here would sit in the history forever at a couple of MB a time.
+*.dmg
+*.pkg
+*.zip
+
+# --- Local machine settings ------------------------------------------------
+# Xcode path, signing team, notarisation profile. Local by design so that
+# nobody's paths or credentials reach the repository.
+build.config
+
+# Per-machine build counter, bumped on every build.
+build_number.txt
+
+# Calibration solved against one specific camera under one set of conditions.
 # Shipping it would give someone else confident but wrong readings.
 shutter_offset.json
 
-# Python
+# --- Xcode user state ------------------------------------------------------
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+.swiftpm/
+Package.resolved
+
+# --- Python ----------------------------------------------------------------
 venv/
+.venv/
+env/
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.pytest_cache/
 
-# macOS
+# --- Editors ---------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+
+# --- Logs and scratch ------------------------------------------------------
+*.log
+
+# --- macOS -----------------------------------------------------------------
 .DS_Store
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.DocumentRevisions-V100
+.TemporaryItems
+.AppleDouble
+.LSOverride
 
-# Claude Code worktrees and session data
+# --- Claude Code worktrees and session data --------------------------------
 .claude/
