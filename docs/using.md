@@ -1,0 +1,252 @@
+# Using the app
+
+[← README](../README.md)
+
+## Window layout
+
+The window is a video area with a control bar under it and a fixed 300pt panel
+on the right. All of it is laid out in `viewDidLayout` from the current view
+size rather than from fixed frames, so resizing cannot leave a control sitting
+on top of the video. The thermal image is aspect-fit inside its area, letterboxed
+rather than stretched -- which also keeps click-to-place accurate, since the
+mouse mapping uses the same rect the image is drawn into.
+
+The **toolbar** carries what gets changed constantly -- palette, markers, plot
+placement, range mode, calibrate, NUC, save photo and record. It sits in the
+title bar, so unlike another row of buttons it costs the video area nothing,
+and it is customisable: right-click to add, remove or rearrange (new-spot
+detection and the virtual-camera toggle are available there too).
+
+The control bar under the image holds the numeric inputs: scale min/max, the
+two alarm thresholds and the new-spot threshold.
+
+The menu bar still holds everything, with the keyboard shortcuts and a
+checkmark showing the current setting:
+
+- **Capture** -- Save Photo (⌘S), Recording (⇧⌘R), Time-lapse, CSV Log, Open
+  Output Folder (⇧⌘O)
+- **Camera** -- Calibrate (⌘K), NUC (⌘R), Publish to Virtual Camera
+- **View** -- Palette (⌘1..⌘6), Markers, Live Plot, Temperature Range,
+  Highlight New Hot / Cold Spots
+
+## Measurement tools
+
+**Click the image to drop a spot; drag to draw whichever of area or line is
+selected.** Pick that with **Drag creates** in the toolbar or under
+**View ▸ Drag Creates** — and holding ⇧shift inverts it, so the other tool is
+always one modifier away without changing the mode. The control bar under the
+image spells out what the current setting does.
+
+- A **spot** (`Sp1`, `Sp2`, ...) reports the average of its 3x3 neighbourhood,
+  not one pixel. Single-pixel readout on this sensor jitters by around a degree.
+- An **area** (`Ar1`, `Ar2`, ...) reports min / average / max, and marks where
+  inside it the hottest and coldest pixels actually are -- an average alone
+  hides a hot spot in the corner, which is usually what you are looking for.
+- A **line** (`Li1`, `Li2`, ...) is a profile: it reports min / average /
+  **median** / max along its length and marks **N points** on it. Set how many
+  and what they point at in the side panel:
+  - **hot** / **cold** — the N most prominent peaks or troughs
+  - **avg** / **med** — where the profile *crosses* its own average or median
+
+  The median is worth having next to the average: one hot pixel drags the mean
+  but not the median, so a large gap between them says the profile is
+  dominated by something small.
+- Selecting a row and setting **Emissivity** overrides it for that object only,
+  for a scene with two materials in one frame (bare metal reads far too cold
+  next to painted steel). Blank means "use the camera-wide value". The override
+  is applied host-side; the camera keeps its own setting.
+
+### Why crossings for avg/median, and peaks for hot/cold
+
+Taking the N highest readings along a line is useless: they all land on the
+same hot spot, one pixel apart. So **hot/cold** looks for *local* extrema, and
+**avg/med** marks where the profile crosses that value -- for those two,
+"nearest the average" would again pile every marker onto one stretch, whereas
+crossings are distinct places.
+
+Three details that only showed up in testing:
+
+- A peak must be **strictly** better than at least one neighbour. Comparing
+  with `>=` on both sides made every pixel of a flat wall a peak, so asking
+  for 9 markers on a uniform surface returned 9 identical readings.
+- A crossing needs a **strict sign change**. Counting a sample that merely sits
+  on the target turned a flat wall -- exactly where the median tends to land --
+  into a crossing at every pixel.
+- Separation is measured **along the profile**, not by frame pixel index. On any
+  line that is not horizontal, consecutive samples differ by about a row width,
+  so an index test never fires and the markers pile onto one spot.
+
+If a profile has fewer distinct features than you asked for, you get fewer
+markers rather than invented ones.
+
+## Built-in markers
+
+**max / min / centre** are toggled under **View > Markers**. Turning one off removes its
+marker, its plot trace and its CSV column together -- what is on screen is what
+is plotted and logged. The global max in particular is worth hiding once you
+have placed your own objects, since it tends to latch onto a reflection.
+
+## New hot / cold spots
+
+**View > Highlight New Hot / Cold Spots** outlines areas that changed by more than the
+given threshold, in a dashed red (hotter) or cyan (colder) box labelled with
+the peak difference -- visually distinct from the solid boxes of placed
+objects.
+
+The baseline is captured the moment you tick the box, then drifts slowly (~45s
+time constant). So "new" means *recently changed*: a spot that has been hot
+since you started is not flagged, one that just appeared is, and one that stays
+hot fades out of the highlight once the baseline catches up. Untick and tick
+again to re-baseline on the scene as it is now.
+
+Regions smaller than 12 connected pixels are ignored, so sensor noise does not
+register as a spot.
+
+## Live plot
+
+**View > Live Plot** places a temperature-vs-time chart **above** or **below** the
+image, or draws a small sparkline **next to each point** (that last one is
+rendered into the frame itself, so it also reaches the virtual camera). The
+chart holds two minutes and autoscales its temperature axis -- a trend of a few
+tenths of a degree is what you are watching for, and a fixed axis flattens it
+into a straight line.
+
+Everything visible is plotted: enabled built-in markers plus every measurement
+object (spots by value, areas by average).
+
+## CSV logging over time
+
+**Start CSV Log** appends a row every N seconds to
+`T2S_log_<timestamp>.csv`: `timestamp`, `elapsed_s`, then one column per
+visible marker and object (areas get `_min`, `_avg` and `_max`).
+
+Columns are fixed when the log starts, so an object placed later is not logged
+-- a CSV whose header stops matching its rows halfway down is worse than one
+that misses a late addition. Stop and restart the log to pick up new objects.
+
+This is separate from the per-photo CSV: that one is a single frame's 256x192
+matrix, this one is a time series of the measurement objects.
+
+## Level/span and alarms
+
+**View > Temperature Range > Auto** re-stretches the colour ramp to each frame. That is why a
+thermally flat scene looks like static, and why the picture flickers when
+something hot enters the frame. **Manual** pins the ramp to a fixed
+min/max in °C, which is the standard fix and makes small differences readable.
+
+**alarm > / alarm <** paint everything above/below a threshold flat red/blue
+(an isotherm). Leave blank for off.
+
+## Saving
+
+Everything goes to **~/Pictures/T2S+ Thermal**.
+
+- **Save Photo** (⌘S) writes a PNG. With **+ CSV** ticked it also writes the
+  full 256x192 temperature matrix, which is what makes the capture radiometric
+  -- a PNG is only a picture, the CSV stays measurable afterwards.
+- **Record Video** (⇧⌘R) writes H.264 .mov. Frames are stamped with real
+  elapsed time, so a dropped frame becomes a pause rather than speeding the
+  video up.
+- **Time-lapse** saves a still every N seconds for M minutes, then stops
+  itself. It reuses the CSV setting.
+
+## Calibrating the native app
+
+The shutter offset is solved against one known temperature and then persisted
+to `shutter_offset.json` **in the App Group container**, so it survives
+restarts.
+
+Do not copy the Python prototype's `shutter_offset.json` over it. Both solve
+for the same physical quantity, but the value that comes out depends on the
+camera state at the moment you calibrate, so a number solved in one is not
+meaningful in the other -- calibrate the Swift app once with ⌘K instead.
+
+## Calibration
+
+**This app uses irpythermal.py's own physics-based temperature formula**
+(`get_temp_table()`), which computes absolute temperature from this specific
+unit's real factory calibration constants (`cal_00`..`cal_05`, read from the
+camera's own metadata every frame) -- not an approximation. That wasn't
+always true here: an earlier version of this app abandoned that formula
+because it produced NaN across ~3800 of its 16384 entries and wasn't even
+monotonic. Both problems traced to the same root cause, confirmed against
+the real camera:
+
+- `irpythermal.py`'s parameter setters (`set_emissivity` etc.) never call
+  the separate `save_parameters()` command (UVC `0x80FF`) needed to actually
+  commit a change, so emissivity was silently stuck at a bogus factory
+  default (`0.02` -- near-mirror reflectivity, physically implausible).
+  Calling `save_parameters()` right after fixes it (this app does so at
+  startup) -- and with a sane emissivity, the NaN count dropped to zero.
+- The remaining broken input is `camera.offset_temp_shutter`, a correction
+  hook the library already defines for its own known-bad shutter-temperature
+  reading on this V2 hardware (the library author: *"I was unable to
+  determine the logic... left that as hard coded room temperature"*). Once
+  emissivity was fixed, sweeping this value produced a clean, monotonic,
+  smoothly-varying, plausible temperature curve with a stable, tight
+  min/max spread -- the real calibration working correctly for the first
+  time in this whole investigation, not a guessed slope.
+
+- **On startup**, `offset_temp_shutter` defaults to `76.0`
+  (`DEFAULT_SHUTTER_OFFSET` in `thermal_view.py`), measured to give a
+  plausible ~20C in one test session. This gets you a believable image
+  immediately, at the cost of accuracy until you calibrate.
+- **`k`**: point the center crosshair at something of known temperature,
+  type the real value in (right there in the app window). The app solves
+  for the `offset_temp_shutter` value that makes the center read that
+  temperature (Newton's method over a few frames, since the relationship
+  isn't exactly 1:1 -- confirmed empirically), typically converging in well
+  under a second.
+- **The solved value is saved** to `shutter_offset.json` and auto-loaded on
+  every future launch as the new starting guess. Unlike a sensor-electronics
+  property, though, there's no strong guarantee this value is stable across
+  sessions (it corrects a register the library's own author couldn't fully
+  characterize) -- treat it as a good starting point that may still need a
+  quick `k` touch-up, not a guaranteed-permanent fix.
+- **`c` — hardware shutter/NUC recalibration**: the real per-pixel flat-field
+  correction, done by briefly closing the camera's physical shutter. Run this
+  if the image looks noisy/patterned, or after the camera's been running a
+  while and drifted. Uses `calibrate_hardware()` rather than
+  `irpythermal.py`'s own `camera.calibrate()` -- that function assumes the
+  shutter is fully closed after a fixed ~1.5-2s delay before capturing a
+  single frame as its reference, but shutter timing here is highly variable
+  (confirmed empirically: 0.15s-7.6s just to *reopen*), and when that
+  assumption is wrong the reference captures a still-transitioning or
+  partially-open view. Confirmed live: this produced 823 "dead pixels"
+  forming one contiguous block -- real scene content misread as sensor
+  defects, then permanently smeared into every later frame by the library's
+  own inpainting correction. `calibrate_hardware()` instead waits for the
+  raw signal to actually go uniform (low, sustained std) before trusting
+  it, and -- as a hard safety net regardless of whether that wait was
+  enough -- refuses to apply dead-pixel correction at all if the flagged
+  count is implausibly high (real defects here have never exceeded ~20
+  pixels; a run flagging more skips the correction and tells you, rather
+  than risk corrupting the image). The app waits for the shutter to
+  physically reopen before showing frames again, which can itself take a
+  few seconds for the same reason (times out after 20s with a warning
+  instead of silently giving up early).
+
+## Known limitation: sensor noise on low-contrast scenes
+
+This sensor's own per-pixel readout noise is high enough that, pointed at a
+thermally uniform scene, the auto-contrast display stretch can turn it into
+near-structureless static -- confirmed directly: a real scene became
+indistinguishable salt-and-pepper noise when the frame's real dynamic range
+was very small. A 20-frame-averaged NUC reference (vs `irpythermal.py`'s
+default single-frame reference) only reduced it ~30%, so it's not primarily
+a calibration artifact; a light 5x5 Gaussian blur before display (`smooth_
+frame()` in `thermal_view.py`) recovers real structure much more
+effectively (~50% noise reduction, confirmed) and is what every commercial
+thermal camera does for exactly this reason. Numeric readouts are computed
+from this same smoothed frame, so they stay consistent with what's on
+screen. Residual noise will still be more visible on a scene with very
+little real temperature variation -- that's the sensor's actual noise floor
+showing through, not a bug.
+- **`e` — emissivity**: sends a real, working command (confirmed above) --
+  but only the *first* emissivity change in a session reliably takes effect.
+  Changing it again was confirmed to apply on an unpredictable delay (one
+  test read back a value set by an *already-exited* earlier script), so
+  there's no reliable way to confirm success or failure for an in-session
+  change, and the app says so rather than guessing. For a value you can
+  count on, set it once at launch: `python3 thermal_view.py --emissivity
+  0.95`.
