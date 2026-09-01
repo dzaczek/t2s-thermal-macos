@@ -13,3 +13,12 @@
 #   xcrun notarytool store-credentials T2SCamera \
 #     --apple-id you@example.com --team-id XXXXXXXXXX --password <app-specific>
 #T2S_NOTARY_PROFILE="T2SCamera"
+
+# App Store Connect API key, so ./build.sh --release can create the Developer ID
+# provisioning profile without an interactive Xcode session. Get one from
+# App Store Connect -> Users and Access -> Integrations -> Keys.
+# Without it, export works only after the first Developer ID distribution has
+# been done once from Xcode's Organizer.
+#T2S_ASC_KEY_PATH="$HOME/private_keys/AuthKey_XXXXXXXX.p8"
+#T2S_ASC_KEY_ID="XXXXXXXX"
+#T2S_ASC_ISSUER_ID="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
