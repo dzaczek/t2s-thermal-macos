@@ -1,6 +1,7 @@
 # Build products
 camera_extension/.build/
 camera_extension/dist/
+camera_extension/T2SCamera.app/
 camera_extension/T2SCamera.xcodeproj/
 vendor/uvc-util/build/
 
