@@ -24,6 +24,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                      height: ThermalViewController.contentHeight))
         // Below this the side panel and the control bar stop fitting.
         window.contentMinSize = NSSize(width: ThermalViewController.panelWidth + 460, height: 420)
+        // Quick access to the settings that get changed constantly. The menu
+        // still holds everything, but a toolbar is one click and, sitting in
+        // the title bar, costs the video area nothing.
+        let toolbar = NSToolbar(identifier: "T2SCameraToolbar")
+        toolbar.delegate = thermalController
+        toolbar.displayMode = .iconAndLabel
+        toolbar.allowsUserCustomization = true
+        toolbar.autosavesConfiguration = true
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
+
         window.center()
         window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(nil)

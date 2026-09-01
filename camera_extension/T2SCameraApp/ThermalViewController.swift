@@ -23,19 +23,19 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
     private let calibration = Calibration()
     private let virtualCam = VirtualCameraFeed()
     private let measurements = MeasurementStore()
-    private let recorder = Recorder()
+    let recorder = Recorder()
     private let history = TemperatureHistory()
 
     /// Where the live trend plot goes, if anywhere.
     enum ChartPosition: Int { case off, above, below, inline }
-    private var chartPosition: ChartPosition = .off
+    var chartPosition: ChartPosition = .off
     private static let chartHeight: CGFloat = 170
 
-    private var palette: Palette = .ironbow
+    var palette: Palette = .ironbow
     private var referenceTemp = Calibration.defaultRoomTemp
-    private var publishToVirtualCam = true
+    var publishToVirtualCam = true
 
-    private var manualRange = false
+    var manualRange = false
     private var manualMin = 15.0
     private var manualMax = 40.0
     private var isothermAbove: Double?
@@ -43,12 +43,12 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
 
     /// The built-in readouts. Hiding one removes both its marker and its
     /// trace, so what is on screen is what is plotted and logged.
-    private var showMax = true
-    private var showMin = true
-    private var showCentre = true
+    var showMax = true
+    var showMin = true
+    var showCentre = true
 
     private let changeDetector = ChangeDetector()
-    private var detectChanges = false
+    var detectChanges = false
 
     private var imageView = ThermalImageView()
     private var statusLabel = NSTextField(labelWithString: "")
@@ -66,6 +66,15 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
     private var captureStatus = NSTextField(labelWithString: "")
     private var chartView = ChartView()
     private let controlBar = NSView()
+
+    // Toolbar controls, populated as the toolbar builds them.
+    weak var toolbarPalette: NSPopUpButton?
+    weak var toolbarPlot: NSPopUpButton?
+    weak var toolbarMarkers: NSSegmentedControl?
+    weak var toolbarRange: NSSegmentedControl?
+    weak var toolbarNewSpots: NSButton?
+    weak var toolbarVirtualCam: NSButton?
+    weak var toolbarRecord: NSButton?
     private var logButton = NSButton()
     private var logSecondsField = NSTextField()
     private var changeThresholdField = NSTextField()
@@ -346,7 +355,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
         for child in panel.subviews { child.autoresizingMask = [.minYMargin] }
     }
 
-    private func updateRangeEnabled() {
+    func updateRangeEnabled() {
         minField.isEnabled = manualRange
         maxField.isEnabled = manualRange
     }
@@ -584,20 +593,24 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
     // MARK: - Menu actions
 
     @objc func selectPalette(_ sender: NSMenuItem) {
+        defer { syncToolbar() }
         palette = Palette(rawValue: sender.tag) ?? .ironbow
     }
 
     @objc func selectChartPosition(_ sender: NSMenuItem) {
+        defer { syncToolbar() }
         chartPosition = ChartPosition(rawValue: sender.tag) ?? .off
         view.needsLayout = true
     }
 
     @objc func selectRangeMode(_ sender: NSMenuItem) {
+        defer { syncToolbar() }
         manualRange = sender.tag == 1
         updateRangeEnabled()
     }
 
     @objc func toggleMarker(_ sender: NSMenuItem) {
+        defer { syncToolbar() }
         switch sender.tag {
         case 0: showMax.toggle()
         case 1: showMin.toggle()
@@ -606,11 +619,13 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
     }
 
     @objc func toggleVirtualCamera(_ sender: Any?) {
+        defer { syncToolbar() }
         publishToVirtualCam.toggle()
         if !publishToVirtualCam { virtualCam.clear() }
     }
 
     @objc func toggleChangeDetection(_ sender: Any?) {
+        defer { syncToolbar() }
         detectChanges.toggle()
         // Re-baseline on every switch-on, so the highlight always means
         // "changed since you asked".
