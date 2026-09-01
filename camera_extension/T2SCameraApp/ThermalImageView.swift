@@ -18,7 +18,10 @@ final class ThermalImageView: NSView {
     /// Live drag rectangle, in view coordinates.
     private var dragOrigin: CGPoint?
     private var dragCurrent: CGPoint?
-    /// Shift held when the drag began: draw a line rather than an area.
+    /// What a plain drag creates. Shift inverts it, so whichever tool is
+    /// selected the other one is always a modifier away.
+    var dragCreatesLine = false
+    /// Resolved at mouse-down, since the modifier can be released mid-drag.
     private var dragIsLine = false
 
     override var isFlipped: Bool { false }
@@ -86,7 +89,7 @@ final class ThermalImageView: NSView {
     override func mouseDown(with event: NSEvent) {
         dragOrigin = convert(event.locationInWindow, from: nil)
         dragCurrent = dragOrigin
-        dragIsLine = event.modifierFlags.contains(.shift)
+        dragIsLine = dragCreatesLine != event.modifierFlags.contains(.shift)
     }
 
     override func mouseDragged(with event: NSEvent) {
