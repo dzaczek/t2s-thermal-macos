@@ -50,6 +50,11 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
     private let changeDetector = ChangeDetector()
     var detectChanges = false
 
+    /// How many peaks a line profile marks, and whether it looks for hot or
+    /// cold ones.
+    private var lineExtremeCount = 3
+    private var lineExtremeMode: MeasurementEngine.ExtremeMode = .hottest
+
     private var imageView = ThermalImageView()
     private var statusLabel = NSTextField(labelWithString: "")
     private var minField = NSTextField()
@@ -78,6 +83,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
     private var logButton = NSButton()
     private var logSecondsField = NSTextField()
     private var changeThresholdField = NSTextField()
+    private var linePointsField = NSTextField()
+    private var lineModeControl = NSSegmentedControl()
     private var panelView = NSView()
 
     /// Latest decoded frame, kept so calibration and capture can act on it.
@@ -119,6 +126,10 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
         }
         imageView.onAddArea = { [weak self] x, y, w, h in
             self?.measurements.addArea(x: x, y: y, w: w, h: h)
+            self?.table.reloadData()
+        }
+        imageView.onAddLine = { [weak self] x, y, x2, y2 in
+            self?.measurements.addLine(x: x, y: y, x2: x2, y2: y2)
             self?.table.reloadData()
         }
         view.addSubview(imageView)
@@ -222,7 +233,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
         add("alarm < °C", isoBelowField, x: 238, w: 62)
         add("new spot Δ°C", changeThresholdField, x: 320, w: 62)
 
-        let hint = NSTextField(labelWithString: "Click the image for a spot, drag for an area")
+        let hint = NSTextField(labelWithString:
+            "Click = spot · drag = area · \u{21E7}shift-drag = line")
         hint.frame = NSRect(x: 400, y: 8, width: 300, height: 14)
         hint.font = .systemFont(ofSize: 10)
         hint.textColor = .tertiaryLabelColor
@@ -274,6 +286,18 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
         let clearButton = NSButton(title: "Clear all", target: self, action: #selector(clearMeasurements(_:)))
         clearButton.frame = NSRect(x: 150, y: y, width: 138, height: 26)
         panel.addSubview(clearButton)
+        y -= 32
+
+        panel.addSubview(label("Line: mark", x: 12, y: y + 4, w: 70))
+        linePointsField = numberField("3", x: 84, y: y, w: 36,
+                                      action: #selector(linePointsChanged(_:)))
+        panel.addSubview(linePointsField)
+        lineModeControl = NSSegmentedControl(labels: ["hottest", "coldest"],
+                                             trackingMode: .selectOne, target: self,
+                                             action: #selector(lineModeChanged(_:)))
+        lineModeControl.frame = NSRect(x: 128, y: y - 1, width: 150, height: 23)
+        lineModeControl.setSelected(true, forSegment: 0)
+        panel.addSubview(lineModeControl)
         y -= 32
 
         panel.addSubview(label("Emissivity of selected (blank = global)", x: 12, y: y + 4, w: W - 24))
@@ -426,7 +450,9 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
         }
         let results: [(Measurement, MeasurementResult)] = items.map { m in
             let source = m.emissivity.flatMap { perEmissivity[$0] } ?? temps
-            return (m, MeasurementEngine.evaluate(m, temps: source, width: W, height: H))
+            return (m, MeasurementEngine.evaluate(m, temps: source, width: W, height: H,
+                                                  lineExtremeCount: lineExtremeCount,
+                                                  lineExtremeMode: lineExtremeMode))
         }
 
         // Trend history. A spot contributes its own value, an area its
@@ -570,6 +596,16 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
     // MARK: - Image actions
 
     @objc private func noop(_ sender: Any?) {}
+
+    @objc private func linePointsChanged(_ sender: Any?) {
+        let v = Int(linePointsField.stringValue) ?? lineExtremeCount
+        lineExtremeCount = max(1, min(10, v))
+        linePointsField.stringValue = String(lineExtremeCount)
+    }
+
+    @objc private func lineModeChanged(_ sender: NSSegmentedControl) {
+        lineExtremeMode = sender.selectedSegment == 0 ? .hottest : .coldest
+    }
 
     @objc private func changeThresholdChanged(_ sender: Any?) {
         let v = Double(changeThresholdField.stringValue.replacingOccurrences(of: ",", with: "."))

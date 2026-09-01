@@ -9,7 +9,12 @@ Written because the vendor ships no macOS software for this camera, and because
 the camera does not work with the obvious approaches on macOS at all (see
 [Why this isn't a simple `cv2.VideoCapture` app](#why-this-isnt-a-simple-cv2videocapture-app)).
 
-![the app publishing to the virtual camera](docs/screenshot.png)
+![the app: toolbar, measurement areas with inline trend plots, and the side panel](docs/app.png)
+
+*Two measurement areas with live sparklines, the measurement table, and the
+capture panel. What the virtual camera publishes is the image alone:*
+
+![what the virtual camera publishes](docs/screenshot.png)
 
 ## Supported hardware
 
@@ -180,18 +185,37 @@ checkmark showing the current setting:
 
 ### Measurement tools
 
-**Click the image to drop a spot, drag to draw an area.** The gesture picks the
-tool, so there are no mode buttons.
+**Click the image to drop a spot, drag to draw an area, ⇧shift-drag to draw a
+line.** The gesture picks the tool, so there are no mode buttons.
 
 - A **spot** (`Sp1`, `Sp2`, ...) reports the average of its 3x3 neighbourhood,
   not one pixel. Single-pixel readout on this sensor jitters by around a degree.
 - An **area** (`Ar1`, `Ar2`, ...) reports min / average / max, and marks where
   inside it the hottest and coldest pixels actually are -- an average alone
   hides a hot spot in the corner, which is usually what you are looking for.
+- A **line** (`Li1`, `Li2`, ...) is a profile: it reports min / average / max
+  along its length and marks the **N most prominent peaks** on it. Set how many
+  and whether to look for hot or cold ones with *Line: mark N hottest/coldest*
+  in the side panel.
 - Selecting a row and setting **Emissivity** overrides it for that object only,
   for a scene with two materials in one frame (bare metal reads far too cold
   next to painted steel). Blank means "use the camera-wide value". The override
   is applied host-side; the camera keeps its own setting.
+
+#### Why "peaks" and not "the N highest samples"
+
+Taking the N highest readings along a line is useless: they all land on the
+same hot spot, one pixel apart. The line tool looks for *local* extrema
+instead, so N markers mean N distinct features.
+
+Two details that matter in practice: a peak must be strictly better than at
+least one neighbour, or a flat wall reports every one of its pixels as a peak;
+and markers are spaced along the profile rather than by pixel index, because on
+any line that is not horizontal consecutive samples differ by about a row
+width, and a separation test on the index never fires.
+
+If a profile has fewer distinct features than you asked for, you get fewer
+markers rather than invented ones.
 
 ### Built-in markers
 
