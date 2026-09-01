@@ -191,12 +191,30 @@ EOF
     VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
         "$DIST/T2SCamera.app/Contents/Info.plist")
     DMG="$DIST/T2SCamera-$VERSION-$BUILD_NUMBER.dmg"
+
+    # Stage only what the user should receive. Building the image straight from
+    # $DIST shipped Xcode's export byproducts too -- DistributionSummary.plist
+    # and a Packaging.log carrying absolute paths from the build machine.
+    STAGE="$DIST/stage"
+    rm -rf "$STAGE"; mkdir -p "$STAGE"
+    cp -R "$DIST/T2SCamera.app" "$STAGE/"
     # A symlink to /Applications: the app must live there or the system
     # extension refuses to activate.
-    ln -s /Applications "$DIST/Applications"
-    hdiutil create -volname "T2S+ Thermal Camera" -srcfolder "$DIST" \
+    ln -s /Applications "$STAGE/Applications"
+
+    hdiutil create -volname "T2S+ Thermal Camera" -srcfolder "$STAGE" \
         -ov -format UDZO "$DMG" >/dev/null
-    rm -f "$DIST/Applications"
+    rm -rf "$STAGE"
+
+    codesign --sign "Developer ID Application" --timestamp "$DMG"
+
+    # Notarise the image as well as the app inside it. A quarantined download
+    # is checked as a disk image first, so a ticket on the app alone still
+    # makes the user click through a warning.
+    echo "==> Notarising disk image"
+    env DEVELOPER_DIR="$DEVELOPER_DIR_PATH" xcrun notarytool submit \
+        "$DMG" --keychain-profile "$T2S_NOTARY_PROFILE" --wait
+    env DEVELOPER_DIR="$DEVELOPER_DIR_PATH" xcrun stapler staple "$DMG"
 
     echo "==> Done: $DMG"
     exit 0
