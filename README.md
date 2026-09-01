@@ -125,9 +125,27 @@ xcrun notarytool store-credentials T2SCamera \
 ./build.sh --release
 ```
 
-This produces a Developer ID signed, notarised, stapled `.dmg` in
-`camera_extension/dist/`. Without notarisation Gatekeeper blocks the app on
-other people's machines.
+This archives, exports a Developer ID build, notarises it, staples the ticket
+and produces a `.dmg` in `camera_extension/dist/`. Without notarisation
+Gatekeeper blocks the app on other people's machines.
+
+**The first Developer ID export needs a provisioning profile.** A system
+extension carries a restricted entitlement (`system-extension.install`) that
+only a provisioning profile can authorise, and creating one requires developer
+account access. Plain `xcodebuild` cannot do it on its own and fails with
+*"No profiles for 'cat.sysop.t2scamera' were found"*. Two ways round it:
+
+- **App Store Connect API key** (scriptable): create one under *Users and
+  Access ▸ Integrations ▸ Keys* and set `T2S_ASC_KEY_PATH`, `T2S_ASC_KEY_ID`
+  and `T2S_ASC_ISSUER_ID` in `build.config`.
+- **Once through Xcode** (no key needed): the script leaves the archive in
+  `dist/T2SCamera.xcarchive` when export fails, so open *Window ▸ Organizer*,
+  select it and *Distribute App ▸ Direct Distribution*. That creates and
+  caches the profile; afterwards `./build.sh --release` runs unattended.
+
+Note that manual signing does not help here, and forcing a Developer ID
+identity onto an automatically signed build collides with its development
+profile — the archive-and-export route above is the one that works.
 
 This app **cannot go to the Mac App Store**: apps distributed there may not
 install system extensions, and the GPLv3 licence below is incompatible with the

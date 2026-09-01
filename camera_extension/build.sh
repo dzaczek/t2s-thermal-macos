@@ -23,6 +23,9 @@
 #   T2S_DEVELOPER_DIR   Xcode to build with (default: xcode-select -p)
 #   T2S_TEAM_ID         signing team (default: detected from the keychain)
 #   T2S_NOTARY_PROFILE  notarytool keychain profile, for --release
+#   T2S_ASC_KEY_PATH    App Store Connect API key (.p8) -- lets --release
+#   T2S_ASC_KEY_ID      create the Developer ID provisioning profile without
+#   T2S_ASC_ISSUER_ID   an interactive Xcode session
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -79,28 +82,87 @@ echo "$BUILD_NUMBER" > "$BUILD_FILE"
 echo "==> Generating Xcode project from project.yml"
 xcodegen generate
 
-SIGN_ARGS=(DEVELOPMENT_TEAM="$T2S_TEAM_ID")
-if [ "$MODE" = "--release" ]; then
-    # Developer ID, so the result runs on machines other than this one.
-    SIGN_ARGS+=(CODE_SIGN_STYLE=Manual
-                CODE_SIGN_IDENTITY="Developer ID Application")
-fi
-
-echo "==> Building (build $BUILD_NUMBER, team $T2S_TEAM_ID)"
-env DEVELOPER_DIR="$DEVELOPER_DIR_PATH" xcodebuild \
-    -project T2SCamera.xcodeproj \
-    -scheme T2SCameraApp \
-    -configuration Release \
-    -derivedDataPath "$DERIVED_ROOT" \
-    -allowProvisioningUpdates \
-    CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-    "${SIGN_ARGS[@]}" \
-    build
-
 if [ "$MODE" = "--release" ]; then
     DIST="dist"
     rm -rf "$DIST"; mkdir -p "$DIST"
-    cp -R "$DERIVED/T2SCamera.app" "$DIST/"
+
+    # Developer ID goes through archive + exportArchive rather than a plain
+    # build. A system extension needs a provisioning profile carrying the
+    # System Extension capability: manual signing fails without one already
+    # made by hand, and forcing a Developer ID identity onto an automatically
+    # signed build collides with its development profile. Exporting with
+    # method "developer-id" is the path where Xcode produces the right profile
+    # itself.
+    cat > "$DIST/ExportOptions.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>method</key>
+    <string>developer-id</string>
+    <key>teamID</key>
+    <string>$T2S_TEAM_ID</string>
+    <key>signingStyle</key>
+    <string>automatic</string>
+</dict>
+</plist>
+PLIST
+
+    # A system extension carries a restricted entitlement, which only a
+    # provisioning profile can authorise. Creating that profile needs account
+    # access; an API key gives xcodebuild it without a signed-in GUI session.
+    # Expanded with the ${a[@]+...} guard below: macOS still ships bash 3.2,
+    # where expanding an empty array under `set -u` is an error.
+    AUTH_ARGS=()
+    if [ -n "${T2S_ASC_KEY_PATH:-}" ]; then
+        AUTH_ARGS=(-authenticationKeyPath "$T2S_ASC_KEY_PATH"
+                   -authenticationKeyID "$T2S_ASC_KEY_ID"
+                   -authenticationKeyIssuerID "$T2S_ASC_ISSUER_ID")
+    fi
+
+    echo "==> Archiving (build $BUILD_NUMBER, team $T2S_TEAM_ID)"
+    env DEVELOPER_DIR="$DEVELOPER_DIR_PATH" xcodebuild \
+        -project T2SCamera.xcodeproj \
+        -scheme T2SCameraApp \
+        -configuration Release \
+        -derivedDataPath "$DERIVED_ROOT" \
+        -archivePath "$DIST/T2SCamera.xcarchive" \
+        -allowProvisioningUpdates \
+        CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+        DEVELOPMENT_TEAM="$T2S_TEAM_ID" \
+        ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
+        archive
+
+    echo "==> Exporting Developer ID build"
+    if ! env DEVELOPER_DIR="$DEVELOPER_DIR_PATH" xcodebuild \
+        -exportArchive \
+        -archivePath "$DIST/T2SCamera.xcarchive" \
+        -exportOptionsPlist "$DIST/ExportOptions.plist" \
+        -exportPath "$DIST" \
+        -allowProvisioningUpdates \
+        ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"}; then
+        cat >&2 <<EOF
+
+==> Export failed.
+    A system extension needs a Developer ID provisioning profile carrying the
+    System Extension capability, and xcodebuild can only create one if it can
+    reach your developer account. Either:
+
+      * set T2S_ASC_KEY_PATH / T2S_ASC_KEY_ID / T2S_ASC_ISSUER_ID in
+        build.config (App Store Connect -> Users and Access -> Integrations
+        -> Keys), or
+
+      * do the first Developer ID export once from Xcode:
+        Window -> Organizer -> select the archive -> Distribute App ->
+        Direct Distribution. That creates and caches the profile, after which
+        this script works on its own.
+
+    The archive is kept at $DIST/T2SCamera.xcarchive so you can export it
+    from Organizer without rebuilding.
+EOF
+        exit 1
+    fi
+    rm -rf "$DIST/T2SCamera.xcarchive" "$DIST/ExportOptions.plist"
 
     echo "==> Verifying signature"
     codesign --verify --deep --strict --verbose=2 "$DIST/T2SCamera.app"
@@ -139,6 +201,17 @@ EOF
     echo "==> Done: $DMG"
     exit 0
 fi
+
+echo "==> Building (build $BUILD_NUMBER, team $T2S_TEAM_ID)"
+env DEVELOPER_DIR="$DEVELOPER_DIR_PATH" xcodebuild \
+    -project T2SCamera.xcodeproj \
+    -scheme T2SCameraApp \
+    -configuration Release \
+    -derivedDataPath "$DERIVED_ROOT" \
+    -allowProvisioningUpdates \
+    CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+    DEVELOPMENT_TEAM="$T2S_TEAM_ID" \
+    build
 
 echo "==> Installing to /Applications"
 pkill -9 -f "T2SCamera" 2>/dev/null || true
