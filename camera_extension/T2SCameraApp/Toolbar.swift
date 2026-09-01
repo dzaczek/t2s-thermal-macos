@@ -12,6 +12,7 @@ extension ThermalViewController: NSToolbarDelegate {
 
     enum ToolbarID {
         static let palette = NSToolbarItem.Identifier("palette")
+        static let tool = NSToolbarItem.Identifier("tool")
         static let markers = NSToolbarItem.Identifier("markers")
         static let plot = NSToolbarItem.Identifier("plot")
         static let range = NSToolbarItem.Identifier("range")
@@ -24,7 +25,7 @@ extension ThermalViewController: NSToolbarDelegate {
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [ToolbarID.palette, ToolbarID.markers, ToolbarID.plot, ToolbarID.range,
+        [ToolbarID.tool, ToolbarID.palette, ToolbarID.markers, ToolbarID.plot, ToolbarID.range,
          .flexibleSpace,
          ToolbarID.calibrate, ToolbarID.nuc,
          .space,
@@ -32,7 +33,7 @@ extension ThermalViewController: NSToolbarDelegate {
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [ToolbarID.palette, ToolbarID.markers, ToolbarID.plot, ToolbarID.range,
+        [ToolbarID.tool, ToolbarID.palette, ToolbarID.markers, ToolbarID.plot, ToolbarID.range,
          ToolbarID.newSpots, ToolbarID.calibrate, ToolbarID.nuc,
          ToolbarID.photo, ToolbarID.record, ToolbarID.virtualCam,
          .flexibleSpace, .space]
@@ -52,6 +53,15 @@ extension ThermalViewController: NSToolbarDelegate {
             item.view = popup
             item.label = "Palette"
             toolbarPalette = popup
+
+        case ToolbarID.tool:
+            let seg = NSSegmentedControl(labels: ["Area", "Line"],
+                                         trackingMode: .selectOne,
+                                         target: self, action: #selector(toolbarToolChanged(_:)))
+            seg.setSelected(true, forSegment: dragTool.rawValue)
+            item.view = seg
+            item.label = "Drag creates"
+            toolbarTool = seg
 
         case ToolbarID.markers:
             let seg = NSSegmentedControl(labels: ["Max", "Min", "Centre"],
@@ -136,6 +146,10 @@ extension ThermalViewController: NSToolbarDelegate {
         palette = Palette(rawValue: sender.indexOfSelectedItem) ?? .ironbow
     }
 
+    @objc func toolbarToolChanged(_ sender: NSSegmentedControl) {
+        dragTool = DragTool(rawValue: sender.selectedSegment) ?? .area
+    }
+
     @objc func toolbarMarkersChanged(_ sender: NSSegmentedControl) {
         showMax = sender.isSelected(forSegment: 0)
         showMin = sender.isSelected(forSegment: 1)
@@ -163,6 +177,7 @@ extension ThermalViewController: NSToolbarDelegate {
     /// Pushes state back into the toolbar, so changing something from the menu
     /// or a keyboard shortcut does not leave the buttons showing stale values.
     func syncToolbar() {
+        toolbarTool?.setSelected(true, forSegment: dragTool.rawValue)
         toolbarPalette?.selectItem(at: palette.rawValue)
         toolbarPlot?.selectItem(at: chartPosition.rawValue)
         toolbarMarkers?.setSelected(showMax, forSegment: 0)

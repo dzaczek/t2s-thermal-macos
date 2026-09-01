@@ -185,8 +185,11 @@ checkmark showing the current setting:
 
 ### Measurement tools
 
-**Click the image to drop a spot, drag to draw an area, ⇧shift-drag to draw a
-line.** The gesture picks the tool, so there are no mode buttons.
+**Click the image to drop a spot; drag to draw whichever of area or line is
+selected.** Pick that with **Drag creates** in the toolbar or under
+**View ▸ Drag Creates** — and holding ⇧shift inverts it, so the other tool is
+always one modifier away without changing the mode. The control bar under the
+image spells out what the current setting does.
 
 - A **spot** (`Sp1`, `Sp2`, ...) reports the average of its 3x3 neighbourhood,
   not one pixel. Single-pixel readout on this sensor jitters by around a degree.

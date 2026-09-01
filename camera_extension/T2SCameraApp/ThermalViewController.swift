@@ -50,6 +50,16 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
     private let changeDetector = ChangeDetector()
     var detectChanges = false
 
+    /// What dragging on the image creates.
+    enum DragTool: Int { case area, line }
+    var dragTool: DragTool = .area {
+        didSet {
+            imageView.dragCreatesLine = (dragTool == .line)
+            updateGestureHint()
+            syncToolbar()
+        }
+    }
+
     /// How many peaks a line profile marks, and whether it looks for hot or
     /// cold ones.
     private var lineExtremeCount = 3
@@ -73,6 +83,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
     private let controlBar = NSView()
 
     // Toolbar controls, populated as the toolbar builds them.
+    weak var toolbarTool: NSSegmentedControl?
     weak var toolbarPalette: NSPopUpButton?
     weak var toolbarPlot: NSPopUpButton?
     weak var toolbarMarkers: NSSegmentedControl?
@@ -84,6 +95,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
     private var logSecondsField = NSTextField()
     private var changeThresholdField = NSTextField()
     private var linePointsField = NSTextField()
+    private var gestureHint = NSTextField(labelWithString: "")
     private var lineModeControl = NSSegmentedControl()
     private var panelView = NSView()
 
@@ -233,12 +245,11 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
         add("alarm < °C", isoBelowField, x: 238, w: 62)
         add("new spot Δ°C", changeThresholdField, x: 320, w: 62)
 
-        let hint = NSTextField(labelWithString:
-            "Click = spot · drag = area · \u{21E7}shift-drag = line")
-        hint.frame = NSRect(x: 400, y: 8, width: 300, height: 14)
-        hint.font = .systemFont(ofSize: 10)
-        hint.textColor = .tertiaryLabelColor
-        controlBar.addSubview(hint)
+        gestureHint.frame = NSRect(x: 400, y: 8, width: 340, height: 14)
+        gestureHint.font = .systemFont(ofSize: 10)
+        gestureHint.textColor = .tertiaryLabelColor
+        controlBar.addSubview(gestureHint)
+        updateGestureHint()
 
         updateRangeEnabled()
     }
@@ -377,6 +388,17 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
         // Contents are laid out from the panel's top, so they must keep their
         // distance from it rather than from the bottom when the window grows.
         for child in panel.subviews { child.autoresizingMask = [.minYMargin] }
+    }
+
+    /// Spells out what the current tool does, so the mode is never a guess.
+    private func updateGestureHint() {
+        gestureHint.stringValue = dragTool == .area
+            ? "Click = spot · drag = area · \u{21E7}shift-drag = line"
+            : "Click = spot · drag = line · \u{21E7}shift-drag = area"
+    }
+
+    @objc func selectDragTool(_ sender: NSMenuItem) {
+        dragTool = DragTool(rawValue: sender.tag) ?? .area
     }
 
     func updateRangeEnabled() {
@@ -689,6 +711,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation {
             return virtualCam.isAvailable
         case #selector(toggleChangeDetection(_:)):
             item.state = detectChanges ? .on : .off
+        case #selector(selectDragTool(_:)):
+            item.state = item.tag == dragTool.rawValue ? .on : .off
         case #selector(toggleVideo(_:)):
             item.title = recorder.isRecordingVideo ? "Stop Recording" : "Start Recording"
         case #selector(toggleInterval(_:)):

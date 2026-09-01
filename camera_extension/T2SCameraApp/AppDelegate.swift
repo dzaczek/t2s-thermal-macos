@@ -109,6 +109,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         paletteItem.submenu = palette
         viewMenu.addItem(paletteItem)
 
+        let tool = NSMenu(title: "Drag Creates")
+        item(tool, "Area", #selector(ThermalViewController.selectDragTool(_:)), "", tag: 0)
+        item(tool, "Line", #selector(ThermalViewController.selectDragTool(_:)), "", tag: 1)
+        let toolItem = NSMenuItem(title: "Drag Creates", action: nil, keyEquivalent: "")
+        toolItem.submenu = tool
+        viewMenu.addItem(toolItem)
+
         let markers = NSMenu(title: "Markers")
         for (i, name) in ["Hottest Point", "Coldest Point", "Centre Point"].enumerated() {
             item(markers, name, #selector(ThermalViewController.toggleMarker(_:)), tag: i)
