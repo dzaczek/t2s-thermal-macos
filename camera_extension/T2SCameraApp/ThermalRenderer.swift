@@ -177,7 +177,11 @@ struct ThermalRenderer {
     /// hides a hot spot in the corner, which is usually the thing you're
     /// looking for.
     private static func drawMeasurements(_ ctx: CGContext, frame: Frame, imgW: Int, imgH: Int) {
-        for (m, r) in frame.measurements {
+        for (m, r) in frame.measurements where m.kind == .line {
+            drawLine(ctx, m: m, r: r, imgW: imgW, imgH: imgH,
+                     canvas: CGSize(width: CGFloat(imgW * scale), height: CGFloat(imgH * scale)))
+        }
+        for (m, r) in frame.measurements where m.kind != .line {
             let b = m.bounds(width: imgW, height: imgH)
             let rect = CGRect(x: CGFloat(b.x0 * scale),
                               y: CGFloat((imgH - 1 - b.y1) * scale),
@@ -208,6 +212,44 @@ struct ThermalRenderer {
                                      width: u(96), height: u(30)))
             }
         }
+    }
+
+    /// A line profile: the line itself, its overall readout, and a marker on
+    /// each of the N peaks found along it.
+    private static func drawLine(_ ctx: CGContext, m: Measurement, r: MeasurementResult,
+                                 imgW: Int, imgH: Int, canvas: CGSize) {
+        func pt(_ px: Int, _ py: Int) -> CGPoint {
+            CGPoint(x: CGFloat(px * scale) + CGFloat(scale) / 2,
+                    y: CGFloat((imgH - 1 - py) * scale) + CGFloat(scale) / 2)
+        }
+        let a = pt(m.x, m.y), b = pt(m.x2, m.y2)
+
+        ctx.setLineCap(.round)
+        ctx.setLineWidth(u(3.5))
+        ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.7).cgColor)
+        ctx.move(to: a); ctx.addLine(to: b); ctx.strokePath()
+        ctx.setLineWidth(u(2))
+        ctx.setStrokeColor(NSColor.white.cgColor)
+        ctx.move(to: a); ctx.addLine(to: b); ctx.strokePath()
+
+        // End caps, so a line is distinguishable from an area's edge.
+        for p in [a, b] {
+            ctx.setFillColor(NSColor.white.cgColor)
+            ctx.fillEllipse(in: CGRect(x: p.x - u(3), y: p.y - u(3), width: u(6), height: u(6)))
+        }
+
+        for (rank, e) in r.extrema.enumerated() {
+            let p = point(for: e.index, imgW: imgW, imgH: imgH)
+            dot(ctx, at: p, color: rank == 0 ? .systemRed : .systemOrange)
+            draw(text: String(format: "%.1f", e.value), in: ctx,
+                 at: CGPoint(x: p.x + u(6), y: p.y - u(6)), size: u(11), color: .white)
+        }
+
+        let label = String(format: "%@ %.1f/%.1f/%.1fC", m.name, r.minValue, r.average, r.maxValue)
+        var ly = Swift.max(a.y, b.y) + u(4)
+        if ly > canvas.height - u(16) { ly = Swift.min(a.y, b.y) - u(16) }
+        draw(text: label, in: ctx, at: CGPoint(x: Swift.min(a.x, b.x), y: ly),
+             size: u(12), color: .white)
     }
 
     /// Small trend plot beside a measurement, normalised to its own range so a

@@ -9,6 +9,7 @@ final class ThermalImageView: NSView {
 
     var onAddSpot: ((Int, Int) -> Void)?
     var onAddArea: ((Int, Int, Int, Int) -> Void)?
+    var onAddLine: ((Int, Int, Int, Int) -> Void)?
 
     var image: CGImage? {
         didSet { needsDisplay = true }
@@ -17,6 +18,8 @@ final class ThermalImageView: NSView {
     /// Live drag rectangle, in view coordinates.
     private var dragOrigin: CGPoint?
     private var dragCurrent: CGPoint?
+    /// Shift held when the drag began: draw a line rather than an area.
+    private var dragIsLine = false
 
     override var isFlipped: Bool { false }
 
@@ -29,12 +32,15 @@ final class ThermalImageView: NSView {
             ctx.draw(image, in: imageRect)
         }
         if let a = dragOrigin, let b = dragCurrent {
-            let r = CGRect(x: min(a.x, b.x), y: min(a.y, b.y),
-                           width: abs(b.x - a.x), height: abs(b.y - a.y))
             ctx.setStrokeColor(NSColor.white.cgColor)
             ctx.setLineWidth(1.5)
             ctx.setLineDash(phase: 0, lengths: [4, 3])
-            ctx.stroke(r)
+            if dragIsLine {
+                ctx.move(to: a); ctx.addLine(to: b); ctx.strokePath()
+            } else {
+                ctx.stroke(CGRect(x: min(a.x, b.x), y: min(a.y, b.y),
+                                  width: abs(b.x - a.x), height: abs(b.y - a.y)))
+            }
         }
     }
 
@@ -80,6 +86,7 @@ final class ThermalImageView: NSView {
     override func mouseDown(with event: NSEvent) {
         dragOrigin = convert(event.locationInWindow, from: nil)
         dragCurrent = dragOrigin
+        dragIsLine = event.modifierFlags.contains(.shift)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -88,7 +95,7 @@ final class ThermalImageView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        defer { dragOrigin = nil; dragCurrent = nil; needsDisplay = true }
+        defer { dragOrigin = nil; dragCurrent = nil; dragIsLine = false; needsDisplay = true }
         guard let start = dragOrigin else { return }
         let end = convert(event.locationInWindow, from: nil)
 
@@ -102,6 +109,10 @@ final class ThermalImageView: NSView {
             return
         }
         guard let b = sensorPoint(end) else { return }
+        if dragIsLine {
+            onAddLine?(a.0, a.1, b.0, b.1)
+            return
+        }
         let x0 = min(a.0, b.0), x1 = max(a.0, b.0)
         let y0 = min(a.1, b.1), y1 = max(a.1, b.1)
         onAddArea?(x0, y0, x1 - x0 + 1, y1 - y0 + 1)
