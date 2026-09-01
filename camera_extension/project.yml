@@ -18,7 +18,7 @@ settings:
     # CFBundleShortVersionString at all and activation failed with "Unable to
     # find any matched extension" -- confirmed by diffing against a working
     # camera extension already installed on this machine.
-    MARKETING_VERSION: "1.0"
+    MARKETING_VERSION: "1.1"
     CURRENT_PROJECT_VERSION: "1"
 
 targets:
