@@ -160,9 +160,17 @@ on top of the video. The thermal image is aspect-fit inside its area, letterboxe
 rather than stretched -- which also keeps click-to-place accurate, since the
 mouse mapping uses the same rect the image is drawn into.
 
-Only the numeric inputs are in the window: scale min/max, the two alarm
-thresholds and the new-spot threshold. Everything that is a choice rather than
-a value lives in the menu bar, where a checkmark shows the current setting:
+The **toolbar** carries what gets changed constantly -- palette, markers, plot
+placement, range mode, calibrate, NUC, save photo and record. It sits in the
+title bar, so unlike another row of buttons it costs the video area nothing,
+and it is customisable: right-click to add, remove or rearrange (new-spot
+detection and the virtual-camera toggle are available there too).
+
+The control bar under the image holds the numeric inputs: scale min/max, the
+two alarm thresholds and the new-spot threshold.
+
+The menu bar still holds everything, with the keyboard shortcuts and a
+checkmark showing the current setting:
 
 - **Capture** -- Save Photo (⌘S), Recording (⇧⌘R), Time-lapse, CSV Log, Open
   Output Folder (⇧⌘O)
