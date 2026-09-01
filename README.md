@@ -9,10 +9,11 @@ Written because the vendor ships no macOS software for this camera, and because
 the camera does not work with the obvious approaches on macOS at all (see
 [Why this isn't a simple `cv2.VideoCapture` app](#why-this-isnt-a-simple-cv2videocapture-app)).
 
-![the app: toolbar, measurement areas with inline trend plots, and the side panel](docs/app.png)
+![the app: toolbar, a line profile with its markers, measurement areas with inline trend plots, and the side panel](docs/app.png)
 
-*Two measurement areas with live sparklines, the measurement table, and the
-capture panel. What the virtual camera publishes is the image alone:*
+*A line profile with `min / avg / med / max` and its markers, two spots, an
+area, inline sparklines and the measurement table. What the virtual camera
+publishes is the image alone:*
 
 ![what the virtual camera publishes](docs/screenshot.png)
 

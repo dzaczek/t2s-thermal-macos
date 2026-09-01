@@ -92,7 +92,6 @@ struct MeasurementResult {
 
 enum MeasurementEngine {
 
-    /// What the N markers on a line should point at.
     /// What the markers on a line point at.
     enum ExtremeMode: Int { case hottest, coldest, average, median }
 
