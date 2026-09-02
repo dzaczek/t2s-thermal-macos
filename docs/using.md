@@ -196,24 +196,35 @@ because it is raw sensor counts and those differ between ranges by thousands.
 Carrying one across would make the image nonsense. So after switching: run
 **Recalibrate Sensor** again, then calibrate.
 
-### The high range needs two references, not one
+### When to use the high range, and when not to
 
-Out of the box the high range gets the *span* wrong, not just the offset. On
-this unit a scene whose true span is 3.3 °C read 8.5 °C in the high range, and
-no amount of shifting the one-point ⌘K offset will stretch or squeeze a span.
+Use it only when the target is hotter than the normal range covers. On anything
+around room temperature it will look flat, and that is the hardware, not a
+fault: the same scene measured here produced **1376 counts** of variation in the
+normal range and **60** in the high range. Sixty levels across a whole room is
+not enough to draw a picture with, whatever correction is applied afterwards.
 
-The correction factor upstream carries a `TODO verify these`, and it is wrong
-here: 0.1 against a measured ~0.039. The default is now 0.04, which is close,
-but the honest fix is to measure it.
+The high range spreads the sensor's 14 bits over a much wider span of
+temperature, so it trades resolution for reach. That is the point of it. A pot
+of boiling water or a hot motor will show plenty of contrast; a wall will not.
 
-**Camera ▸ Calibrate with Two References…** does that. Aim the crosshair at
-something cool, type its temperature, then at something hot and type that. Two
-points give the scale and the offset exactly, and the result is stored for that
-range. A pot of just-boiled water and a person's forehead work well: far apart,
-and both easy to check.
+### The high range also needs two references, not one
 
-The normal range does not need this. Its factor really is 1.0 and one point is
-enough.
+Its *span* comes out wrong as well as its offset, and no amount of shifting the
+one-point ⌘K offset will stretch a span. The factor upstream carries a
+`TODO verify these` and is wrong here: 0.1 against a measured figure nearer
+0.039. The default is 0.04, but the honest fix is to measure it on your own
+camera.
+
+**Camera ▸ Calibrate with Two References…** does that: aim at something cool,
+type its temperature, then at something hot and type that. Two points give the
+scale and the offset exactly, stored per range. A pot of just-boiled water and
+a forehead work well.
+
+The two temperatures must be at least 5 °C apart. Entering the same value twice
+gives a scale of zero, which renders every pixel as one flat temperature and
+looks exactly like a dead camera. The app now refuses such a fit instead of
+saving it, and **Camera ▸ Reset Calibration for This Range** undoes a bad one.
 
 ## Calibration
 

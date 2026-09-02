@@ -456,6 +456,19 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         try UVCControl.send(measurementRange == .high
                             ? UVCControl.cmdRangeHigh : UVCControl.cmdRangeNormal)
         calibration.range = measurementRange
+        // The camera restabilises after a range change; upstream waits up to
+        // 20s for it. Frames arriving before it settles are not meaningful.
+        Thread.sleep(forTimeInterval: 3)
+    }
+
+    /// Puts scale, bias and the shutter offset for this range back to their
+    /// starting values. Needed because a bad calibration is otherwise sticky:
+    /// it is stored, reloaded on launch, and there was no way out of it.
+    @objc func resetCalibration(_ sender: Any?) {
+        calibration.resetToDefaults()
+        setStatus(String(format: "Calibration for this range reset to defaults "
+                         + "(scale %.3f, offset %.1f). Calibrate again when ready.",
+                         calibration.scale, calibration.shutterOffset))
     }
 
     @objc func selectRange(_ sender: NSMenuItem) {
@@ -980,6 +993,12 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         guard let cold = ask("cooler", "Something around room temperature works well.") else { return }
         guard let hot = ask("warmer", "The wider apart the two are, the better the fit.") else { return }
 
+        guard abs(hot.temp - cold.temp) >= 5 else {
+            setStatus("Those two temperatures are within 5C of each other. The fit "
+                      + "needs them far apart, and entering the same value twice "
+                      + "would flatten the whole image to one temperature.")
+            return
+        }
         guard abs(hot.raw - cold.raw) > 1 else {
             setStatus("Both readings came from the same sensor value. Aim at two "
                       + "genuinely different temperatures.")
@@ -1000,6 +1019,14 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         }
         let a = (hot.temp - cold.temp) / (mHot - mCold)
         let b = cold.temp - a * mCold
+        // A degenerate fit flattens every pixel to one value, which looks like
+        // the camera has died. Refuse it rather than store it.
+        guard a.isFinite, b.isFinite, a > 1e-4 else {
+            setStatus(String(format: "That fit came out degenerate (scale %.5f) and "
+                             + "would show a single flat temperature, so it was not "
+                             + "saved. Try two references further apart.", a))
+            return
+        }
         calibration.setTwoPoint(scale: a, bias: b)
         setStatus(String(format: "Two-point calibration: scale %.4f, bias %.1f "
                          + "(from %.1fC and %.1fC).", a, b, cold.temp, hot.temp))

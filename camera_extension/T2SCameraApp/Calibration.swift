@@ -46,6 +46,15 @@ final class Calibration {
     /// Solved from two references at known temperatures. This is what makes
     /// the high range usable: its span is wrong out of the box, and no amount
     /// of shifting the shutter offset can stretch a span.
+    /// Back to the range's starting values, and forget the stored ones.
+    func resetToDefaults() {
+        scale = range.defaultScale
+        bias = range.defaultBias
+        shutterOffsetStorage = 76.0
+        isCalibrated = false
+        Calibration.clear(for: range)
+    }
+
     func setTwoPoint(scale: Double, bias: Double) {
         self.scale = scale
         self.bias = bias
@@ -97,6 +106,14 @@ final class Calibration {
         guard let s = all[key(for: range) + "_scale"],
               let b = all[key(for: range) + "_bias"] else { return nil }
         return (s, b)
+    }
+
+    private static func clear(for range: ThermalDecoder.Range) {
+        var all = stored()
+        for suffix in ["", "_scale", "_bias"] { all[key(for: range) + suffix] = nil }
+        guard let url = offsetURL,
+              let data = try? JSONSerialization.data(withJSONObject: all) else { return }
+        try? data.write(to: url, options: .atomic)
     }
 
     private static func savePair(scale: Double, bias: Double, for range: ThermalDecoder.Range) {
