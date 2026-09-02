@@ -497,7 +497,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
                 scale: calibration.scale, bias: calibration.bias) else { return }
         let temps = lookup(smoothed, in: table)
 
-        let extremes = ThermalProcessor.robustExtremes(temps)
+        let extremes = ThermalProcessor.extremes(temps)
         let centerIndex = (H / 2) * W + W / 2
 
         // Objects with their own emissivity need their own table; build one

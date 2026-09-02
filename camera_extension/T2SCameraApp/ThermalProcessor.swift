@@ -53,28 +53,29 @@ enum ThermalProcessor {
         var minIndex: Int, maxIndex: Int
     }
 
-    /// Min/max ignoring the top and bottom 1% of pixels.
+    /// True minimum and maximum, and where they are.
     ///
-    /// A single dead or noisy pixel otherwise dominates the reading -- this
-    /// sensor produced up to 19 flagged dead pixels in one calibration, and
-    /// an unclipped max lands on one of them rather than on anything real.
-    static func robustExtremes(_ values: [Double], lowPercentile: Double = 1.0,
-                               highPercentile: Double = 99.0) -> Extremes {
-        guard !values.isEmpty else { return Extremes(minValue: 0, maxValue: 0, minIndex: 0, maxIndex: 0) }
-        let sorted = values.sorted()
-        let lo = sorted[Int(Double(sorted.count - 1) * lowPercentile / 100.0)]
-        let hi = sorted[Int(Double(sorted.count - 1) * highPercentile / 100.0)]
-
-        // Report the position of the most extreme pixel that is still inside
-        // the clipped range, so the marker lands on real content.
-        var minIdx = 0, maxIdx = 0
-        var minSeen = Double.greatestFiniteMagnitude, maxSeen = -Double.greatestFiniteMagnitude
-        for (i, v) in values.enumerated() {
-            let c = Swift.min(Swift.max(v, lo), hi)
-            if c < minSeen { minSeen = c; minIdx = i }
-            if c > maxSeen { maxSeen = c; maxIdx = i }
+    /// This used to clip to the 1st and 99th percentile so that one noisy pixel
+    /// could not dominate. That quietly discarded any hot object smaller than
+    /// 1% of the frame -- 491 pixels of 49152 -- which is most of what anyone
+    /// points a thermal camera at. A 20x20 patch at 60C in a 20C room was
+    /// reported as 20.0C, and because the clipped values then all compared
+    /// equal, the marker was placed on pixel zero rather than on the object.
+    ///
+    /// Single-pixel noise is already dealt with before this: the frame goes
+    /// through a 5x5 blur and dead pixels are repaired. So take the real
+    /// extremes.
+    static func extremes(_ values: [Double]) -> Extremes {
+        guard !values.isEmpty else {
+            return Extremes(minValue: 0, maxValue: 0, minIndex: 0, maxIndex: 0)
         }
-        return Extremes(minValue: minSeen, maxValue: maxSeen, minIndex: minIdx, maxIndex: maxIdx)
+        var lo = values[0], hi = values[0]
+        var loIdx = 0, hiIdx = 0
+        for (i, v) in values.enumerated() {
+            if v < lo { lo = v; loIdx = i }
+            if v > hi { hi = v; hiIdx = i }
+        }
+        return Extremes(minValue: lo, maxValue: hi, minIndex: loIdx, maxIndex: hiIdx)
     }
 
     /// Stretches values to 0...255 for display (per-frame auto-exposure).
