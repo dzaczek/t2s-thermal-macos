@@ -15,12 +15,29 @@ final class Calibration {
     /// starting guess -- a real value comes from calibrating against a known
     /// temperature, so it is persisted and reloaded rather than re-solved on
     /// every launch (the Python prototype does the same via shutter_offset.json).
-    var shutterOffset: Double = Calibration.loadShutterOffset() ?? 76.0 {
-        didSet { Calibration.saveShutterOffset(shutterOffset) }
+    /// Which measurement range the stored offsets belong to. The camera
+    /// reports different calibration metadata per range, so an offset solved
+    /// in one is meaningless in the other and they are kept apart.
+    var range: ThermalDecoder.Range = .normal {
+        didSet {
+            guard range != oldValue else { return }
+            shutterOffsetStorage = Calibration.loadShutterOffset(for: range) ?? 76.0
+            isCalibrated = Calibration.loadShutterOffset(for: range) != nil
+        }
+    }
+
+    private var shutterOffsetStorage: Double = Calibration.loadShutterOffset(for: .normal) ?? 76.0
+
+    var shutterOffset: Double {
+        get { shutterOffsetStorage }
+        set {
+            shutterOffsetStorage = newValue
+            Calibration.saveShutterOffset(newValue, for: range)
+        }
     }
 
     /// True when the offset came from an actual calibration rather than the guess.
-    private(set) var isCalibrated: Bool = Calibration.loadShutterOffset() != nil
+    private(set) var isCalibrated: Bool = Calibration.loadShutterOffset(for: .normal) != nil
 
     func markCalibrated() { isCalibrated = true }
 
@@ -32,18 +49,29 @@ final class Calibration {
             .appendingPathComponent("shutter_offset.json")
     }
 
-    private static func loadShutterOffset() -> Double? {
+    private static func key(for range: ThermalDecoder.Range) -> String {
+        // The original single-range file used this name; keep it for the
+        // normal range so an existing calibration is not lost.
+        range == .normal ? "offset_temp_shutter" : "offset_temp_shutter_high"
+    }
+
+    private static func stored() -> [String: Double] {
         guard let url = offsetURL,
               let data = try? Data(contentsOf: url),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Double]
-        else { return nil }
-        return json["offset_temp_shutter"]
+        else { return [:] }
+        return json
     }
 
-    private static func saveShutterOffset(_ value: Double) {
+    private static func loadShutterOffset(for range: ThermalDecoder.Range) -> Double? {
+        stored()[key(for: range)]
+    }
+
+    private static func saveShutterOffset(_ value: Double, for range: ThermalDecoder.Range) {
+        var all = stored()
+        all[key(for: range)] = value
         guard let url = offsetURL,
-              let data = try? JSONSerialization.data(
-                withJSONObject: ["offset_temp_shutter": value]) else { return }
+              let data = try? JSONSerialization.data(withJSONObject: all) else { return }
         try? data.write(to: url, options: .atomic)
     }
 

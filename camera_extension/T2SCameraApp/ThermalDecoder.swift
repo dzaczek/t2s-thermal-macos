@@ -18,6 +18,27 @@ import Foundation
 ///     temperature -- see Calibrator.
 struct ThermalDecoder {
 
+    /// The camera has two measurement ranges, and they are not just a clamp:
+    /// each reports different calibration metadata and needs different
+    /// corrections. Decoding a frame with the wrong one assumed gives
+    /// confidently wrong temperatures -- measured on this unit, a room read
+    /// 23.6-26.4C in the normal range and 77-189C in the high range with the
+    /// normal-range maths applied.
+    enum Range {
+        /// -20 to 120C.
+        case normal
+        /// -20 to 450C.
+        case high
+
+        /// Applied to cal00 when building the table offset.
+        var appliesCal00Correction: Bool { self == .normal }
+
+        /// Linear correction on the finished table. The high-range figures come
+        /// from irpythermal, where they are marked as unverified.
+        var scale: Double { self == .normal ? 1.0 : 0.1 }
+        var bias: Double { 0.0 }
+    }
+
     static let zeroC = 273.15
     /// Table covers the sensor's 14-bit raw range.
     static let tableSize = 16384
@@ -109,7 +130,8 @@ struct ThermalDecoder {
     /// image read as 0C and those zeros leaked into the min/max markers, the
     /// CSV export and the trend history. Callers must skip the frame instead.
     static func temperatureTable(meta: Metadata, shutterOffset: Double, userOffset: Double = 0,
-                                 emissivity: Double? = nil) -> [Double]? {
+                                 emissivity: Double? = nil,
+                                 range: Range = .normal) -> [Double]? {
         let fpaTemp = 20.0 - (Double(meta.fpaRaw) - fpaOffset) / fpaDivisor
         let ts = shutterOffset
         let distance = min(meta.distance, 20.0)
@@ -125,7 +147,10 @@ struct ThermalDecoder {
         let calC = meta.cal01 * pow(ts, 2) + ts * meta.cal02
         let calD = meta.cal03 * pow(fpaTemp, 2) + meta.cal04 * fpaTemp + meta.cal05
 
-        let cal00Corr = Int(cal00Offset - fpaTemp * cal00FpaMultiplier)
+        // The high range does not take this correction at all.
+        let cal00Corr = range.appliesCal00Correction
+            ? Int(cal00Offset - fpaTemp * cal00FpaMultiplier)
+            : 0
         let tableOffset = meta.cal00 - Double(cal00Corr > 0 ? cal00Corr : 0)
 
         guard meta.cal01 != 0, denominator != 0 else { return nil }
@@ -141,7 +166,7 @@ struct ThermalDecoder {
             // otherwise a slice of the table poisons min/max lookups.
             var t = inner > 0 ? pow(inner, 0.25) - zeroC : -zeroC
             t = t + (distance * 0.85 - 1.125) * (t - meta.airTemp) / 100.0 + meta.correction
-            table[i] = t + userOffset
+            table[i] = range.scale * (t + userOffset) + range.bias
         }
         return table
     }

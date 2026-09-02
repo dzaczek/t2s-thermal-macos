@@ -92,6 +92,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
              #selector(ThermalViewController.calibrateTemperature(_:)), "k")
         item(camera, "Recalibrate Sensor (NUC)", #selector(ThermalViewController.runNUC(_:)), "r")
         camera.addItem(.separator())
+
+        let measRange = NSMenu(title: "Measurement Range")
+        item(measRange, "Normal (−20 to 120 °C)",
+             #selector(ThermalViewController.selectRange(_:)), "", tag: 0)
+        item(measRange, "High (−20 to 450 °C)",
+             #selector(ThermalViewController.selectRange(_:)), "", tag: 1)
+        let measRangeItem = NSMenuItem(title: "Measurement Range", action: nil, keyEquivalent: "")
+        measRangeItem.submenu = measRange
+        camera.addItem(measRangeItem)
+
+        camera.addItem(.separator())
         item(camera, "Publish to Virtual Camera",
              #selector(ThermalViewController.toggleVirtualCamera(_:)))
         cameraItem.submenu = camera
@@ -132,12 +143,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         plotItem.submenu = plot
         viewMenu.addItem(plotItem)
 
-        let range = NSMenu(title: "Temperature Range")
-        item(range, "Auto", #selector(ThermalViewController.selectRangeMode(_:)), tag: 0)
-        item(range, "Manual", #selector(ThermalViewController.selectRangeMode(_:)), tag: 1)
-        let rangeItem = NSMenuItem(title: "Temperature Range", action: nil, keyEquivalent: "")
-        rangeItem.submenu = range
-        viewMenu.addItem(rangeItem)
+        let scale = NSMenu(title: "Colour Scale")
+        item(scale, "Auto", #selector(ThermalViewController.selectRangeMode(_:)), tag: 0)
+        item(scale, "Manual", #selector(ThermalViewController.selectRangeMode(_:)), tag: 1)
+        let scaleItem = NSMenuItem(title: "Colour Scale", action: nil, keyEquivalent: "")
+        scaleItem.submenu = scale
+        viewMenu.addItem(scaleItem)
 
         viewMenu.addItem(.separator())
         item(viewMenu, "Highlight New Hot / Cold Spots",

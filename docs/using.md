@@ -161,6 +161,30 @@ for the same physical quantity, but the value that comes out depends on the
 camera state at the moment you calibrate, so a number solved in one is not
 meaningful in the other -- calibrate the Swift app once with ⌘K instead.
 
+## Measurement range
+
+The camera has two hardware ranges, **−20 to 120 °C** and **−20 to 450 °C**,
+under **Camera ▸ Measurement Range**. They are not a clamp on the same data:
+the camera reports different calibration metadata for each, and the decoder
+needs different corrections for each.
+
+The app sets the range explicitly at startup rather than inheriting whatever
+the camera was last left in, because decoding a frame against the wrong range
+gives confidently wrong numbers. Measured on this unit, the same room read
+23.6–26.4 °C in the normal range and 77–189 °C in the high range with the
+normal-range maths applied.
+
+**Each range needs its own calibration.** They are stored separately, so
+switching back does not lose the other one. Switch range, press ⌘K once, and
+both are then remembered.
+
+The high range's correction factor comes from
+[IR-Py-Thermal](https://github.com/diminDDL/IR-Py-Thermal), where it is marked
+as unverified, and this project has not checked it against a reference either.
+It brings a room from a nonsensical 77–189 °C down to a plausible 7–19 °C
+before calibration, but treat absolute readings in the high range with more
+suspicion than in the normal one.
+
 ## Calibration
 
 **This app uses irpythermal.py's own physics-based temperature formula**
