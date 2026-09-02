@@ -591,9 +591,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             extremes: extremes,
             centerTemp: temps[centerIndex],
             palette: palette,
-            calibrationNote: calibration.isCalibrated
-                ? String(format: "calibrated (offset %.1f)", calibration.shutterOffset)
-                : "uncalibrated - press \u{2318}K on a known temperature",
+            calibrationNote: calibrationNote,
             scaleMin: scaleMin,
             scaleMax: scaleMax,
             measurements: results,
@@ -647,6 +645,18 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
                 }
             }
         }
+    }
+
+    /// What the overlay says about how much the numbers can be trusted.
+    private var calibrationNote: String {
+        if measurementRange == .high && !calibration.hasTwoPoint {
+            return "HIGH RANGE NOT CALIBRATED - temperatures are not valid, "
+                + "use Calibrate with Two References"
+        }
+        if calibration.isCalibrated {
+            return String(format: "calibrated (offset %.1f)", calibration.shutterOffset)
+        }
+        return "uncalibrated - press \u{2318}K on a known temperature"
     }
 
     private func lookup(_ values: [Double], in table: [Double]) -> [Double] {

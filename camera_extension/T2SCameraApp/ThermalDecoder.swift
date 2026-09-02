@@ -33,11 +33,16 @@ struct ThermalDecoder {
         /// Applied to cal00 when building the table offset.
         var appliesCal00Correction: Bool { self == .normal }
 
-        /// Starting point for the linear correction on the finished table,
-        /// until a two-point calibration measures the real one. Upstream's
-        /// high-range figure of 0.1 is marked unverified there and is wrong on
-        /// this unit: it left a scene whose true span is 3.3C reading 8.5C.
-        var defaultScale: Double { self == .normal ? 1.0 : 0.04 }
+        /// No correction until one is measured.
+        ///
+        /// Upstream's high-range figure of 0.1 is marked unverified there, and
+        /// two attempts to estimate a better one from scene spans gave 0.039
+        /// and then 1.26 -- an order of magnitude apart, because each was
+        /// comparing different scenes. The factor is not guessable from the
+        /// outside, so the default applies none and the app says plainly that
+        /// high-range readings are invalid until two references are measured.
+        /// An obviously wrong number is safer than a plausible wrong one.
+        var defaultScale: Double { 1.0 }
         var defaultBias: Double { 0.0 }
     }
 
