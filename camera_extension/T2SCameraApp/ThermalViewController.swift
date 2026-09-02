@@ -50,6 +50,11 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private let changeDetector = ChangeDetector()
     var detectChanges = false
 
+    /// Which measurement range the camera is in. Set explicitly at startup:
+    /// the camera keeps whatever it was last put in, and decoding a frame
+    /// against the wrong range gives confidently wrong temperatures.
+    var measurementRange: ThermalDecoder.Range = .normal
+
     /// What dragging on the image creates.
     enum DragTool: Int { case area, line }
     var dragTool: DragTool = .area {
@@ -424,6 +429,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         // out full of NaN.
         do {
             try UVCControl.send(UVCControl.cmdRawMode)
+            try applyRange()
             try UVCControl.applyParameters(emissivity: 0.95, distanceMeters: 1,
                                            airTemp: 20, reflectedTemp: 20)
         } catch {
@@ -444,6 +450,30 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
 
     }
 
+    /// Puts the camera into the selected range and points the calibration at
+    /// that range's saved offset.
+    private func applyRange() throws {
+        try UVCControl.send(measurementRange == .high
+                            ? UVCControl.cmdRangeHigh : UVCControl.cmdRangeNormal)
+        calibration.range = measurementRange
+    }
+
+    @objc func selectRange(_ sender: NSMenuItem) {
+        let wanted: ThermalDecoder.Range = sender.tag == 1 ? .high : .normal
+        guard wanted != measurementRange else { return }
+        measurementRange = wanted
+        changeDetector.reset()
+        do {
+            try applyRange()
+            setStatus(measurementRange == .normal
+                ? "Range: -20 to 120C." + (calibration.isCalibrated ? "" : " Not calibrated for this range yet — press \u{2318}K.")
+                : "Range: -20 to 450C. The high-range correction is unverified upstream; check it against a known temperature."
+                  + (calibration.isCalibrated ? "" : " Not calibrated for this range yet — press \u{2318}K."))
+        } catch {
+            setStatus("Could not switch range: \(error.localizedDescription)")
+        }
+    }
+
     private func handle(raw: [UInt16]) {
         guard !nucInProgress else { return }
         let tStart = CFAbsoluteTimeGetCurrent()
@@ -462,7 +492,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         // Frames whose metadata cannot drive the model are skipped outright;
         // rendering them would publish a 0C image and poison the readouts.
         guard let table = ThermalDecoder.temperatureTable(
-                meta: meta, shutterOffset: calibration.shutterOffset) else { return }
+                meta: meta, shutterOffset: calibration.shutterOffset,
+                range: measurementRange) else { return }
         let temps = lookup(smoothed, in: table)
 
         let extremes = ThermalProcessor.robustExtremes(temps)
@@ -476,7 +507,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             guard let e = m.emissivity, perEmissivity[e] == nil else { continue }
             guard let t = ThermalDecoder.temperatureTable(
                     meta: meta, shutterOffset: calibration.shutterOffset,
-                    emissivity: e) else { continue }
+                    emissivity: e, range: measurementRange) else { continue }
             perEmissivity[e] = lookup(smoothed, in: t)
         }
         let results: [(Measurement, MeasurementResult)] = items.map { m in
@@ -737,6 +768,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             item.state = detectChanges ? .on : .off
         case #selector(selectDragTool(_:)):
             item.state = item.tag == dragTool.rawValue ? .on : .off
+        case #selector(selectRange(_:)):
+            item.state = item.tag == (measurementRange == .high ? 1 : 0) ? .on : .off
         case #selector(toggleVideo(_:)):
             item.title = recorder.isRecordingVideo ? "Stop Recording" : "Start Recording"
         case #selector(toggleInterval(_:)):
