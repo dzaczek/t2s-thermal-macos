@@ -174,16 +174,30 @@ gives confidently wrong numbers. Measured on this unit, the same room read
 23.6–26.4 °C in the normal range and 77–189 °C in the high range with the
 normal-range maths applied.
 
-**Each range needs its own calibration.** They are stored separately, so
-switching back does not lose the other one. Switch range, press ⌘K once, and
-both are then remembered.
+**Each range needs its own calibration, and its own NUC.** Both are stored per
+range and the flat-field reference is dropped automatically when you switch,
+because it is raw sensor counts and those differ between ranges by thousands.
+Carrying one across would make the image nonsense. So after switching: run
+**Recalibrate Sensor** again, then calibrate.
 
-The high range's correction factor comes from
-[IR-Py-Thermal](https://github.com/diminDDL/IR-Py-Thermal), where it is marked
-as unverified, and this project has not checked it against a reference either.
-It brings a room from a nonsensical 77–189 °C down to a plausible 7–19 °C
-before calibration, but treat absolute readings in the high range with more
-suspicion than in the normal one.
+### The high range needs two references, not one
+
+Out of the box the high range gets the *span* wrong, not just the offset. On
+this unit a scene whose true span is 3.3 °C read 8.5 °C in the high range, and
+no amount of shifting the one-point ⌘K offset will stretch or squeeze a span.
+
+The correction factor upstream carries a `TODO verify these`, and it is wrong
+here: 0.1 against a measured ~0.039. The default is now 0.04, which is close,
+but the honest fix is to measure it.
+
+**Camera ▸ Calibrate with Two References…** does that. Aim the crosshair at
+something cool, type its temperature, then at something hot and type that. Two
+points give the scale and the offset exactly, and the result is stored for that
+range. A pot of just-boiled water and a person's forehead work well: far apart,
+and both easy to check.
+
+The normal range does not need this. Its factor really is 1.0 and one point is
+enough.
 
 ## Calibration
 
