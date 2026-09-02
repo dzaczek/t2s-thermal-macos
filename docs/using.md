@@ -196,35 +196,37 @@ because it is raw sensor counts and those differ between ranges by thousands.
 Carrying one across would make the image nonsense. So after switching: run
 **Recalibrate Sensor** again, then calibrate.
 
-### When to use the high range, and when not to
+### The high range is not calibrated out of the box
 
-Use it only when the target is hotter than the normal range covers. On anything
-around room temperature it will look flat, and that is the hardware, not a
-fault: the same scene measured here produced **1376 counts** of variation in the
-normal range and **60** in the high range. Sixty levels across a whole room is
-not enough to draw a picture with, whatever correction is applied afterwards.
+Its readings are **not valid** until you measure the correction yourself, and
+the overlay says so in yellow while that is the case.
 
-The high range spreads the sensor's 14 bits over a much wider span of
-temperature, so it trades resolution for reach. That is the point of it. A pot
-of boiling water or a hot motor will show plenty of contrast; a wall will not.
+The correction factor upstream carries a `TODO verify these`, and it is not
+guessable from outside. Two attempts to estimate it here from scene spans gave
+0.039 and then 1.26, an order of magnitude apart, because each was comparing
+different scenes. So the app applies no correction by default: an obviously
+wrong number is safer than a plausible wrong one.
 
-### The high range also needs two references, not one
+**Camera ▸ Calibrate with Two References…** measures it. Aim the crosshair at
+something cool, type its temperature, then at something hot and type that. Two
+points fix the scale and the offset exactly, and the result is stored for that
+range. A pot of just-boiled water and a forehead work well: far apart and easy
+to check.
 
-Its *span* comes out wrong as well as its offset, and no amount of shifting the
-one-point ⌘K offset will stretch a span. The factor upstream carries a
-`TODO verify these` and is wrong here: 0.1 against a measured figure nearer
-0.039. The default is 0.04, but the honest fix is to measure it on your own
-camera.
-
-**Camera ▸ Calibrate with Two References…** does that: aim at something cool,
-type its temperature, then at something hot and type that. Two points give the
-scale and the offset exactly, stored per range. A pot of just-boiled water and
-a forehead work well.
-
-The two temperatures must be at least 5 °C apart. Entering the same value twice
-gives a scale of zero, which renders every pixel as one flat temperature and
-looks exactly like a dead camera. The app now refuses such a fit instead of
+The two temperatures have to be at least 5 °C apart. Entering the same value
+twice fits a horizontal line, which renders every pixel as one flat temperature
+and looks exactly like a dead camera. The app refuses such a fit rather than
 saving it, and **Camera ▸ Reset Calibration for This Range** undoes a bad one.
+
+### When the high range is worth using
+
+Only when the target is hotter than the normal range reaches. It spreads the
+same 14 bits over 470 °C instead of 140, trading resolution for reach: the same
+room scene gave 1376 counts of raw variation in the normal range and 60 in the
+high one. A hot object still stands out clearly, but the background detail
+around it does not.
+
+For anything up to about 120 °C, which is most work, stay in the normal range.
 
 ## Calibration
 

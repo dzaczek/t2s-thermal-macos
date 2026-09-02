@@ -55,6 +55,11 @@ final class Calibration {
         Calibration.clear(for: range)
     }
 
+    /// True once a two-point fit has been measured for the current range.
+    /// The high range is not trustworthy without one: its defaults are a
+    /// placeholder, not a working calibration.
+    var hasTwoPoint: Bool { Calibration.loadPair(for: range) != nil }
+
     func setTwoPoint(scale: Double, bias: Double) {
         self.scale = scale
         self.bias = bias
