@@ -218,6 +218,13 @@ twice fits a horizontal line, which renders every pixel as one flat temperature
 and looks exactly like a dead camera. The app refuses such a fit rather than
 saving it, and **Camera ▸ Reset Calibration for This Range** undoes a bad one.
 
+### If ⌘K gives a wildly wrong reading
+
+Ask for 28 °C and get −22, and the culprit is a stored two-point calibration
+that the one-point solve was ignoring. That is fixed, but if a bad pair is
+already saved, **Camera ▸ Reset Calibration for This Range** clears it and puts
+the range back to defaults.
+
 ### When the high range is worth using
 
 Only when the target is hotter than the normal range reaches. It spreads the

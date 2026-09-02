@@ -216,8 +216,17 @@ final class Calibration {
     /// Newton's method rather than a fixed step: the relationship isn't 1:1,
     /// its slope varies with operating point, so the model's own local slope
     /// is probed each iteration.
+    /// Solves against exactly what the screen shows.
+    ///
+    /// It used to build its tables with the defaults, ignoring the range and
+    /// the two-point scale and bias that the display applies. With a two-point
+    /// calibration stored it was therefore optimising a different function
+    /// from the one being looked at: asking for 28C at the centre produced a
+    /// reading of -22C.
     static func solveShutterOffset(startingAt offset: Double, knownTemp: Double,
                                    centerRaw: Double, meta: ThermalDecoder.Metadata,
+                                   range: ThermalDecoder.Range = .normal,
+                                   scale: Double = 1.0, bias: Double = 0.0,
                                    maxIterations: Int = 8, tolerance: Double = 0.05) -> Double {
         var current = offset
         let probeStep = 5.0
@@ -225,9 +234,12 @@ final class Calibration {
 
         for _ in 0..<maxIterations {
             // An unusable frame cannot improve the estimate; keep what we have.
-            guard let table = ThermalDecoder.temperatureTable(meta: meta, shutterOffset: current),
-                  let probedTable = ThermalDecoder.temperatureTable(meta: meta,
-                                                                    shutterOffset: current + probeStep)
+            guard let table = ThermalDecoder.temperatureTable(
+                    meta: meta, shutterOffset: current,
+                    range: range, scale: scale, bias: bias),
+                  let probedTable = ThermalDecoder.temperatureTable(
+                    meta: meta, shutterOffset: current + probeStep,
+                    range: range, scale: scale, bias: bias)
             else { return current }
             let value = table[index]
             if abs(value - knownTemp) < tolerance { break }
