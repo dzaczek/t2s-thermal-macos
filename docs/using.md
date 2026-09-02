@@ -81,6 +81,22 @@ markers rather than invented ones.
 
 ## Built-in markers
 
+The hottest and coldest markers report the **true** extremes of the frame and
+sit on the pixel they came from.
+
+They did not always. They used to clip to the 1st and 99th percentile so that a
+single noisy pixel could not dominate, which threw away any object smaller than
+1% of the frame, or 491 pixels of 49152. A soldering iron at 60 °C in a 20 °C
+room was reported as 20 °C, with the marker parked on pixel zero. Single-pixel
+noise is already handled by the 5x5 blur and the dead-pixel repair, so the
+clipping was doing harm and no good.
+
+One consequence worth knowing: with **Colour Scale: Auto**, one small very hot
+thing now stretches the palette across the whole frame and everything else goes
+dark. That is what a thermal camera should do, and **Manual** is there for when
+you would rather keep the contrast on the background.
+
+
 **max / min / centre** are toggled under **View > Markers**. Turning one off removes its
 marker, its plot trace and its CSV column together -- what is on screen is what
 is plotted and logged. The global max in particular is worth hiding once you
