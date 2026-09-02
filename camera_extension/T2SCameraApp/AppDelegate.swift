@@ -93,6 +93,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         item(camera, "Calibrate with Two References…",
              #selector(ThermalViewController.calibrateTwoPoint(_:)), "K")
         item(camera, "Recalibrate Sensor (NUC)", #selector(ThermalViewController.runNUC(_:)), "r")
+        item(camera, "Reset Calibration for This Range",
+             #selector(ThermalViewController.resetCalibration(_:)))
         camera.addItem(.separator())
 
         let measRange = NSMenu(title: "Measurement Range")
