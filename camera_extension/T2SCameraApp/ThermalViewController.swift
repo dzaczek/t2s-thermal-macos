@@ -969,7 +969,9 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
 
         calibration.shutterOffset = Calibration.solveShutterOffset(
             startingAt: calibration.shutterOffset, knownTemp: known,
-            centerRaw: lastCenterRaw, meta: meta)
+            centerRaw: lastCenterRaw, meta: meta,
+            range: measurementRange,
+            scale: calibration.scale, bias: calibration.bias)
         referenceTemp = known
         calibration.markCalibrated()
         setStatus(String(format: "Calibrated: centre = %.1fC (shutter offset %.2f)",
