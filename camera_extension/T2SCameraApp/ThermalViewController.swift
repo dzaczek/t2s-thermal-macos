@@ -493,7 +493,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         // rendering them would publish a 0C image and poison the readouts.
         guard let table = ThermalDecoder.temperatureTable(
                 meta: meta, shutterOffset: calibration.shutterOffset,
-                range: measurementRange) else { return }
+                range: measurementRange,
+                scale: calibration.scale, bias: calibration.bias) else { return }
         let temps = lookup(smoothed, in: table)
 
         let extremes = ThermalProcessor.robustExtremes(temps)
@@ -507,7 +508,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             guard let e = m.emissivity, perEmissivity[e] == nil else { continue }
             guard let t = ThermalDecoder.temperatureTable(
                     meta: meta, shutterOffset: calibration.shutterOffset,
-                    emissivity: e, range: measurementRange) else { continue }
+                    emissivity: e, range: measurementRange,
+                    scale: calibration.scale, bias: calibration.bias) else { continue }
             perEmissivity[e] = lookup(smoothed, in: t)
         }
         let results: [(Measurement, MeasurementResult)] = items.map { m in
@@ -949,6 +951,58 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         calibration.markCalibrated()
         setStatus(String(format: "Calibrated: centre = %.1fC (shutter offset %.2f)",
                          known, calibration.shutterOffset))
+    }
+
+    /// Solves the linear correction from two references at known
+    /// temperatures.
+    ///
+    /// One point can only shift the readings. The high range comes out with
+    /// the wrong *span* as well, and nothing you do to a single offset will
+    /// stretch it, so two points are needed: they give scale and bias exactly.
+    @objc func calibrateTwoPoint(_ sender: Any?) {
+        guard let meta = lastMeta else { return }
+
+        func ask(_ which: String, _ hint: String) -> (raw: Double, temp: Double)? {
+            let alert = NSAlert()
+            alert.messageText = "Two-point calibration: \(which) reference"
+            alert.informativeText = hint + "\n\nAim the centre crosshair at it, hold "
+                + "steady, then type its real temperature."
+            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 90, height: 24))
+            alert.accessoryView = field
+            alert.addButton(withTitle: "Use this")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn,
+                  let t = Double(field.stringValue.replacingOccurrences(of: ",", with: "."))
+            else { return nil }
+            return (lastCenterRaw, t)
+        }
+
+        guard let cold = ask("cooler", "Something around room temperature works well.") else { return }
+        guard let hot = ask("warmer", "The wider apart the two are, the better the fit.") else { return }
+
+        guard abs(hot.raw - cold.raw) > 1 else {
+            setStatus("Both readings came from the same sensor value. Aim at two "
+                      + "genuinely different temperatures.")
+            return
+        }
+
+        // Model output with the correction removed, then fit a*model + b.
+        guard let plain = ThermalDecoder.temperatureTable(
+                meta: meta, shutterOffset: calibration.shutterOffset,
+                range: measurementRange, scale: 1.0, bias: 0.0) else { return }
+        let index = { (r: Double) -> Int in
+            Int(max(0, min(Double(ThermalDecoder.tableSize - 1), r.rounded())))
+        }
+        let mCold = plain[index(cold.raw)], mHot = plain[index(hot.raw)]
+        guard abs(mHot - mCold) > 1e-6 else {
+            setStatus("The model gives both points the same temperature; cannot fit.")
+            return
+        }
+        let a = (hot.temp - cold.temp) / (mHot - mCold)
+        let b = cold.temp - a * mCold
+        calibration.setTwoPoint(scale: a, bias: b)
+        setStatus(String(format: "Two-point calibration: scale %.4f, bias %.1f "
+                         + "(from %.1fC and %.1fC).", a, b, cold.temp, hot.temp))
     }
 
     /// Closes the shutter, waits for the signal to actually go flat, averages

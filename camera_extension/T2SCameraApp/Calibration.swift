@@ -22,11 +22,36 @@ final class Calibration {
         didSet {
             guard range != oldValue else { return }
             shutterOffsetStorage = Calibration.loadShutterOffset(for: range) ?? 76.0
-            isCalibrated = Calibration.loadShutterOffset(for: range) != nil
+            let pair = Calibration.loadPair(for: range)
+            scale = pair?.scale ?? range.defaultScale
+            bias = pair?.bias ?? range.defaultBias
+            isCalibrated = Calibration.loadShutterOffset(for: range) != nil || pair != nil
+            // The flat-field reference is raw sensor counts, and those differ
+            // between ranges by thousands. Carrying one across makes the image
+            // nonsense, so it goes.
+            reference = nil
+            deadPixels = []
         }
     }
 
     private var shutterOffsetStorage: Double = Calibration.loadShutterOffset(for: .normal) ?? 76.0
+
+    /// Linear correction measured by a two-point calibration, per range.
+    /// Until one is done these hold the range's starting guess.
+    private(set) var scale: Double = Calibration.loadPair(for: .normal)?.scale
+        ?? ThermalDecoder.Range.normal.defaultScale
+    private(set) var bias: Double = Calibration.loadPair(for: .normal)?.bias
+        ?? ThermalDecoder.Range.normal.defaultBias
+
+    /// Solved from two references at known temperatures. This is what makes
+    /// the high range usable: its span is wrong out of the box, and no amount
+    /// of shifting the shutter offset can stretch a span.
+    func setTwoPoint(scale: Double, bias: Double) {
+        self.scale = scale
+        self.bias = bias
+        Calibration.savePair(scale: scale, bias: bias, for: range)
+        isCalibrated = true
+    }
 
     var shutterOffset: Double {
         get { shutterOffsetStorage }
@@ -37,7 +62,7 @@ final class Calibration {
     }
 
     /// True when the offset came from an actual calibration rather than the guess.
-    private(set) var isCalibrated: Bool = Calibration.loadShutterOffset(for: .normal) != nil
+    var isCalibrated: Bool = Calibration.loadShutterOffset(for: .normal) != nil
 
     func markCalibrated() { isCalibrated = true }
 
@@ -65,6 +90,22 @@ final class Calibration {
 
     private static func loadShutterOffset(for range: ThermalDecoder.Range) -> Double? {
         stored()[key(for: range)]
+    }
+
+    private static func loadPair(for range: ThermalDecoder.Range) -> (scale: Double, bias: Double)? {
+        let all = stored()
+        guard let s = all[key(for: range) + "_scale"],
+              let b = all[key(for: range) + "_bias"] else { return nil }
+        return (s, b)
+    }
+
+    private static func savePair(scale: Double, bias: Double, for range: ThermalDecoder.Range) {
+        var all = stored()
+        all[key(for: range) + "_scale"] = scale
+        all[key(for: range) + "_bias"] = bias
+        guard let url = offsetURL,
+              let data = try? JSONSerialization.data(withJSONObject: all) else { return }
+        try? data.write(to: url, options: .atomic)
     }
 
     private static func saveShutterOffset(_ value: Double, for range: ThermalDecoder.Range) {

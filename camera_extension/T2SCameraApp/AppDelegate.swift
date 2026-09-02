@@ -90,6 +90,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let camera = NSMenu(title: "Camera")
         item(camera, "Calibrate Temperature…",
              #selector(ThermalViewController.calibrateTemperature(_:)), "k")
+        item(camera, "Calibrate with Two References…",
+             #selector(ThermalViewController.calibrateTwoPoint(_:)), "K")
         item(camera, "Recalibrate Sensor (NUC)", #selector(ThermalViewController.runNUC(_:)), "r")
         camera.addItem(.separator())
 

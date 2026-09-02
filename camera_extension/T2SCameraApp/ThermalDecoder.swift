@@ -33,10 +33,12 @@ struct ThermalDecoder {
         /// Applied to cal00 when building the table offset.
         var appliesCal00Correction: Bool { self == .normal }
 
-        /// Linear correction on the finished table. The high-range figures come
-        /// from irpythermal, where they are marked as unverified.
-        var scale: Double { self == .normal ? 1.0 : 0.1 }
-        var bias: Double { 0.0 }
+        /// Starting point for the linear correction on the finished table,
+        /// until a two-point calibration measures the real one. Upstream's
+        /// high-range figure of 0.1 is marked unverified there and is wrong on
+        /// this unit: it left a scene whose true span is 3.3C reading 8.5C.
+        var defaultScale: Double { self == .normal ? 1.0 : 0.04 }
+        var defaultBias: Double { 0.0 }
     }
 
     static let zeroC = 273.15
@@ -131,7 +133,8 @@ struct ThermalDecoder {
     /// CSV export and the trend history. Callers must skip the frame instead.
     static func temperatureTable(meta: Metadata, shutterOffset: Double, userOffset: Double = 0,
                                  emissivity: Double? = nil,
-                                 range: Range = .normal) -> [Double]? {
+                                 range: Range = .normal,
+                                 scale: Double = 1.0, bias: Double = 0.0) -> [Double]? {
         let fpaTemp = 20.0 - (Double(meta.fpaRaw) - fpaOffset) / fpaDivisor
         let ts = shutterOffset
         let distance = min(meta.distance, 20.0)
@@ -166,7 +169,7 @@ struct ThermalDecoder {
             // otherwise a slice of the table poisons min/max lookups.
             var t = inner > 0 ? pow(inner, 0.25) - zeroC : -zeroC
             t = t + (distance * 0.85 - 1.125) * (t - meta.airTemp) / 100.0 + meta.correction
-            table[i] = range.scale * (t + userOffset) + range.bias
+            table[i] = scale * (t + userOffset) + bias
         }
         return table
     }
