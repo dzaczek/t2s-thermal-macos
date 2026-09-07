@@ -155,6 +155,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(scaleItem)
 
         viewMenu.addItem(.separator())
+        item(viewMenu, "Rotate Left", #selector(ThermalViewController.rotateLeft(_:)), "[")
+        item(viewMenu, "Rotate Right", #selector(ThermalViewController.rotateRight(_:)), "]")
+        item(viewMenu, "Reset Rotation", #selector(ThermalViewController.resetRotation(_:)), "\\")
+
+        viewMenu.addItem(.separator())
+        item(viewMenu, "Track Selected Object",
+             #selector(ThermalViewController.toggleTrackSelected(_:)), "t")
+        item(viewMenu, "Stop Tracking Everything",
+             #selector(ThermalViewController.stopAllTracking(_:)))
+
+        viewMenu.addItem(.separator())
         item(viewMenu, "Highlight New Hot / Cold Spots",
              #selector(ThermalViewController.toggleChangeDetection(_:)))
         viewItem.submenu = viewMenu

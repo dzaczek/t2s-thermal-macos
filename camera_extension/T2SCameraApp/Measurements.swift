@@ -29,6 +29,9 @@ struct Measurement: Equatable {
     /// point of overriding it is a scene with two materials in one frame
     /// (bare metal reads far too cold next to painted steel otherwise).
     var emissivity: Double?
+    /// Sticky: the object follows what it was placed on instead of staying
+    /// pinned to a fixed set of pixels. See ObjectTracker.
+    var tracked: Bool = false
 
     var name: String {
         switch kind {
@@ -58,6 +61,29 @@ struct Measurement: Equatable {
             out.append(py * width + px)
         }
         return out
+    }
+
+    /// Unclamped pixel bounds, which is what moving the object has to reason
+    /// about: `bounds` has already been squeezed into the frame, so shifting
+    /// it would quietly resize the object at the edges.
+    var extent: (x0: Int, y0: Int, x1: Int, y1: Int) {
+        switch kind {
+        case .spot:
+            let r = Measurement.spotRadius
+            return (x - r, y - r, x + r, y + r)
+        case .area:
+            return (x, y, x + w - 1, y + h - 1)
+        case .line:
+            return (Swift.min(x, x2), Swift.min(y, y2), Swift.max(x, x2), Swift.max(y, y2))
+        }
+    }
+
+    /// Centre and half-extent, for anything that reasons about where the
+    /// object sits rather than which pixels it covers.
+    var centre: (x: Int, y: Int, halfW: Int, halfH: Int) {
+        let e = extent
+        return ((e.x0 + e.x1) / 2, (e.y0 + e.y1) / 2,
+                (e.x1 - e.x0) / 2, (e.y1 - e.y0) / 2)
     }
 
     /// Pixel bounds, clamped to the sensor.
@@ -307,5 +333,58 @@ final class MeasurementStore {
     func setEmissivity(_ value: Double?, at index: Int) {
         guard items.indices.contains(index) else { return }
         items[index].emissivity = value
+    }
+
+    func setTracked(_ on: Bool, at index: Int) {
+        guard items.indices.contains(index) else { return }
+        items[index].tracked = on
+    }
+
+    func index(ofName name: String) -> Int? {
+        items.firstIndex { $0.name == name }
+    }
+
+    /// Shifts an object, keeping all of it inside the frame. The shift is
+    /// clamped rather than the coordinates, so an object pushed against an
+    /// edge slides along it instead of being squashed against it.
+    func move(name: String, dx: Int, dy: Int, width: Int, height: Int) {
+        guard let i = index(ofName: name) else { return }
+        let e = items[i].extent
+        let sx = Swift.max(-e.x0, Swift.min(dx, width - 1 - e.x1))
+        let sy = Swift.max(-e.y0, Swift.min(dy, height - 1 - e.y1))
+        items[i].x += sx
+        items[i].y += sy
+        if items[i].kind == .line {
+            items[i].x2 += sx
+            items[i].y2 += sy
+        }
+    }
+
+    /// Turns every object with the image, so a rotation leaves each one on the
+    /// thing it was measuring. `width`/`height` are the frame *before* the turn.
+    func rotate(_ rotation: ImageRotation, width: Int, height: Int) {
+        guard rotation != .none else { return }
+        for i in items.indices {
+            let a = rotation.map(x: items[i].x, y: items[i].y, width: width, height: height)
+            switch items[i].kind {
+            case .spot:
+                items[i].x = a.x
+                items[i].y = a.y
+            case .line:
+                let b = rotation.map(x: items[i].x2, y: items[i].y2, width: width, height: height)
+                items[i].x = a.x; items[i].y = a.y
+                items[i].x2 = b.x; items[i].y2 = b.y
+            case .area:
+                // A turned rectangle is still a rectangle: map the opposite
+                // corners and take what lies between them.
+                let b = rotation.map(x: items[i].x + items[i].w - 1,
+                                     y: items[i].y + items[i].h - 1,
+                                     width: width, height: height)
+                items[i].x = Swift.min(a.x, b.x)
+                items[i].y = Swift.min(a.y, b.y)
+                items[i].w = abs(b.x - a.x) + 1
+                items[i].h = abs(b.y - a.y) + 1
+            }
+        }
     }
 }

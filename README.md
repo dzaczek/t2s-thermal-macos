@@ -28,6 +28,12 @@ anything first. Also a reliable way to derail a standup.
   peaks along it (or the troughs, or where it crosses its own average)
 * Per-object emissivity, set per box, because bare metal sitting next to
   painted steel reads far too cold on a single global setting
+* Rotation in 90° steps, for when the camera is clamped sideways or hanging
+  upside down. Your measurements turn with the picture and stay on whatever
+  they were measuring
+* Sticky objects. Put a box on a hand, a face or a switch, tick **Track**, and
+  it follows that thing around the frame instead of staying nailed to a fixed
+  set of pixels. It says so when it loses what it was following
 * Threshold alarms that flood everything hotter or colder than a value in flat
   colour
 * Highlighting for anything that has warmed up or cooled down since you started
