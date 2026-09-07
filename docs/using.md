@@ -93,20 +93,43 @@ from a slightly different position, so the stack carries detail no single
 frame could. **Hold the camera in your hand — the shake is what makes it
 work.** On a tripod there is nothing to recover beyond less noise.
 
-The same thing gives you two different results depending on how much you move:
+It needs something to line up on. Point it at a blank wall and it says so
+rather than inventing detail. The status line reports how many frames were
+used, how many were dropped and how far the camera moved.
 
-- **Barely move** and you get the same view at twice the resolution.
-- **Pan slowly** and the canvas grows to cover wherever the frames landed, and
-  you get a mosaic wider than the sensor can see at once.
+A burst is for holding roughly still. Move more than about a sensor width and
+it will tell you to use Panorama instead, which is built for it.
 
-What it will not do: it only works out sideways movement, so **do not twist
-the camera** as you pan — turned frames cannot be lined up and get thrown out.
-It also needs something to line up on. Point it at a blank wall and it says so
-rather than inventing detail.
+## Panorama
 
-The status line reports how many frames were used, how many were dropped, how
-far it moved, and for a mosaic how much of the picture is real rather than
-filled in at the ragged edges.
+**Capture ▸ Panorama**, ⇧⌘P, or the button in the side panel. Press once to
+start, sweep the camera, press again to finish. Every frame that arrives is
+laid onto one picture that grows as you go, so the sweep can run as long as
+you like — what is held in memory is the picture, not the frames.
+
+**Any direction works**: left, right, up, down or diagonally, and you can go
+back over ground you have already covered to fill it in more thickly. The
+canvas grows on whichever sides it needs to.
+
+**Keep the camera the same way up.** Turning it is the one movement this
+cannot follow — there is no gyroscope to ask and no angle is worked out from
+the picture, so twisted frames simply fail to match and are dropped. Slide it
+about as much as you like; do not roll your wrist.
+
+This is not Hugin. There is no lens model and no projection onto a sphere, so
+a sweep wide enough to need one will not close up properly. For a wall, a
+rack, a roof or a run of pipework — the things a thermal camera is usually
+pointed at — sliding it sideways is exactly right.
+
+The status line keeps count as you sweep: frames placed, frames dropped, how
+big the picture is so far and how far you have moved. It stops by itself if
+the picture reaches its size limit, and saves what it has.
+
+Drift is the thing that ruins a long sweep, and it is handled by measuring
+each frame against a *keyframe* rather than against the frame before it. A
+keyframe is only replaced once the view has moved a third of a sensor width,
+so error accumulates once per keyframe instead of once per frame. In testing,
+a sweep of 297 pixels across a hundred frames measured 297.0.
 
 ## Keeping the sensor's own numbers
 

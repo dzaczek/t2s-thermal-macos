@@ -79,6 +79,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let capture = NSMenu(title: "Capture")
         item(capture, "Save Photo", #selector(ThermalViewController.savePhoto(_:)), "s")
         item(capture, "Super Photo", #selector(ThermalViewController.captureSuperPhoto(_:)), "S")
+        item(capture, "Panorama", #selector(ThermalViewController.togglePanorama(_:)), "P")
         item(capture, "Start Recording", #selector(ThermalViewController.toggleVideo(_:)), "R")
         item(capture, "Start Time-lapse", #selector(ThermalViewController.toggleInterval(_:)))
         item(capture, "Start CSV Log", #selector(ThermalViewController.toggleLog(_:)))

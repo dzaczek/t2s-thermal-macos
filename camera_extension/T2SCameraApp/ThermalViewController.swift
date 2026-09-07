@@ -143,7 +143,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private let panelScroll = NSScrollView()
     private let panelContent = NSView()
     /// Tall enough for every control with room for the status text underneath.
-    private static let panelContentHeight: CGFloat = 860
+    private static let panelContentHeight: CGFloat = 896
     private var hasScrolledPanelToTop = false
 
     /// Latest decoded frame, kept so calibration and capture can act on it.
@@ -174,6 +174,13 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     /// About a second of frames. Enough shifts to fill a finer grid without
     /// asking anyone to hold a pose.
     private static let superPhotoFrames = 24
+
+    /// A sweep in progress. Frames are added on their own queue: laying one
+    /// down costs a couple of milliseconds and the live view should not wait
+    /// for it, least of all for the seconds it takes to grow the canvas.
+    private var panorama: PanoramaBuilder?
+    private let panoramaQueue = DispatchQueue(label: "cat.sysop.t2scamera.panorama")
+    private var panoramaButton = NSButton()
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0,
@@ -480,6 +487,14 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         rawToggle.toolTip = "Also save the sensor's own counts, so the capture can be "
             + "decoded again later under different settings."
         panel.addSubview(rawToggle)
+        y -= 30
+
+        panoramaButton = NSButton(title: "Panorama", target: self,
+                                  action: #selector(togglePanorama(_:)))
+        panoramaButton.frame = NSRect(x: 12, y: y, width: W - 24, height: 26)
+        panoramaButton.toolTip = "Start sweeping, in any direction, and every frame is laid "
+            + "onto one growing picture. Press again to finish."
+        panel.addSubview(panoramaButton)
         y -= 32
 
         recordButton = NSButton(title: "Record Video", target: self, action: #selector(toggleVideo(_:)))
@@ -819,6 +834,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         frameLock.unlock()
 
         collectSuperPhotoFrame(temps, width: fw, height: fh)
+        collectPanoramaFrame(temps, width: fw, height: fh)
 
         if publishToVirtualCam { virtualCam.publish(image) }
         let tPublished = CFAbsoluteTimeGetCurrent()
@@ -951,6 +967,63 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         }
     }
 
+    // MARK: - Panorama
+
+    /// Hands a frame to a sweep in progress, off the capture queue.
+    private func collectPanoramaFrame(_ temps: [Double], width: Int, height: Int) {
+        guard panorama != nil else { return }
+        panoramaQueue.async { [weak self] in
+            guard let self, let builder = self.panorama else { return }
+            let placed = builder.add(temps)
+            if builder.isFull {
+                self.setCaptureStatus("Panorama is as large as it can get \u{2014} finishing.")
+                self.finishPanorama()
+                return
+            }
+            guard placed else { return }
+            let size = builder.canvasSize
+            self.setCaptureStatus(String(
+                format: "Panorama: %d frames, %d dropped, %dx%d so far, moved %.0f px. "
+                        + "Press again to finish.",
+                builder.framesUsed, builder.framesRejected, size.width, size.height,
+                builder.travel))
+        }
+    }
+
+    @objc func togglePanorama(_ sender: Any?) {
+        if panorama != nil {
+            finishPanorama()
+            return
+        }
+        let size = frameSize
+        panoramaQueue.sync {
+            panorama = PanoramaBuilder(width: size.width, height: size.height)
+        }
+        panoramaButton.title = "Finish Panorama"
+        setCaptureStatus("Panorama started. Sweep the camera slowly \u{2014} any direction, "
+                         + "and back over the same ground if you like. Keep it the same way up: "
+                         + "turning it is the one movement this cannot follow. "
+                         + "Press again when you are done.")
+    }
+
+    private func finishPanorama() {
+        panoramaQueue.async { [weak self] in
+            guard let self, let builder = self.panorama else { return }
+            self.panorama = nil
+            DispatchQueue.main.async { self.panoramaButton.title = "Panorama" }
+
+            guard let result = builder.finish() else {
+                self.setCaptureStatus("Panorama came to nothing: too few frames could be placed. "
+                                      + "It needs something with contrast to line up on, and a "
+                                      + "sweep slow enough to overlap.")
+                return
+            }
+            self.setCaptureStatus(String(format: "Panorama: drawing %dx%d\u{2026}",
+                                         result.width, result.height))
+            self.saveStacked(result, nameHint: "T2S_pano", what: "Panorama")
+        }
+    }
+
     @objc func captureSuperPhoto(_ sender: Any?) {
         superLock.lock()
         let alreadyRunning = superFrames != nil
@@ -970,56 +1043,62 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             guard let self else { return }
             guard let stacked = SuperPhoto.stack(frames, width: width, height: height) else {
                 self.setCaptureStatus("Super photo failed: the frames could not be lined up. "
-                                      + "A blank wall has nothing to line up on, and the camera "
-                                      + "must not be turned as it moves.")
+                                      + "A blank wall has nothing to line up on, the camera must "
+                                      + "not be turned as it moves, and a burst that travels this "
+                                      + "far wants Panorama instead.")
                 return
             }
+            self.saveStacked(stacked, nameHint: "T2S_super", what: "Super photo")
+        }
+    }
 
-            let extremes = ThermalProcessor.extremes(stacked.values)
-            let scaleMin = self.manualRange ? self.manualMin : extremes.minValue
-            let scaleMax = self.manualRange ? self.manualMax : extremes.maxValue
-            let frame = ThermalRenderer.Frame(
-                temperatures: stacked.values,
-                normalized: ThermalProcessor.normalize(stacked.values, from: scaleMin, to: scaleMax),
-                imageWidth: stacked.width,
-                imageHeight: stacked.height,
-                extremes: extremes,
-                centerTemp: stacked.values[(stacked.height / 2) * stacked.width + stacked.width / 2],
-                palette: self.palette,
-                calibrationNote: self.calibrationNote,
-                scaleMin: scaleMin,
-                scaleMax: scaleMax,
-                // The objects on screen are placed in sensor pixels and this
-                // picture is a different size and often a different view, so
-                // carrying them over would put them on the wrong things.
-                measurements: [],
-                dewPointThreshold: self.showDewPoint
-                    ? self.ambient.dewPoint + self.dewPointMargin : nil,
-                dewPoint: self.showDewPoint ? self.ambient.dewPoint : nil,
-                showsMax: self.showMax,
-                showsMin: self.showMin,
-                showsCentre: self.showCentre)
+    /// Draws and saves a stacked picture, whether it came from a burst or a
+    /// sweep. They differ only in how the frames were gathered; from here on
+    /// there is nothing to tell apart.
+    private func saveStacked(_ stacked: SuperPhoto.Result, nameHint: String, what: String) {
+        let extremes = ThermalProcessor.extremes(stacked.values)
+        let scaleMin = manualRange ? manualMin : extremes.minValue
+        let scaleMax = manualRange ? manualMax : extremes.maxValue
+        let frame = ThermalRenderer.Frame(
+            temperatures: stacked.values,
+            normalized: ThermalProcessor.normalize(stacked.values, from: scaleMin, to: scaleMax),
+            imageWidth: stacked.width,
+            imageHeight: stacked.height,
+            extremes: extremes,
+            centerTemp: stacked.values[(stacked.height / 2) * stacked.width + stacked.width / 2],
+            palette: palette,
+            calibrationNote: calibrationNote,
+            scaleMin: scaleMin,
+            scaleMax: scaleMax,
+            // The objects on screen are placed in sensor pixels and this
+            // picture is a different size and often a different view, so
+            // carrying them over would put them on the wrong things.
+            measurements: [],
+            dewPointThreshold: showDewPoint ? ambient.dewPoint + dewPointMargin : nil,
+            dewPoint: showDewPoint ? ambient.dewPoint : nil,
+            showsMax: showMax,
+            showsMin: showMin,
+            showsCentre: showCentre)
 
-            guard let image = ThermalRenderer.render(frame) else {
-                self.setCaptureStatus("Super photo failed while drawing.")
-                return
-            }
-            do {
-                let url = try self.recorder.savePhoto(image, temperatures: stacked.values,
-                                                      width: stacked.width, height: stacked.height,
-                                                      nameHint: "T2S_super")
-                let kind = stacked.travel > 3
-                    ? String(format: "mosaic, moved %.0f pixels", stacked.travel)
-                    : "stacked in place"
-                self.setCaptureStatus(String(
-                    format: "Saved %@ \u{2014} %dx%d from %d frames (%d dropped), %@%@.",
-                    url.lastPathComponent, stacked.width, stacked.height,
-                    stacked.framesUsed, stacked.framesRejected, kind,
-                    stacked.coverage < 0.995
-                        ? String(format: ", %.0f%% covered", stacked.coverage * 100) : ""))
-            } catch {
-                self.setCaptureStatus(error.localizedDescription)
-            }
+        guard let image = ThermalRenderer.render(frame) else {
+            setCaptureStatus("\(what) failed while drawing.")
+            return
+        }
+        do {
+            let url = try recorder.savePhoto(image, temperatures: stacked.values,
+                                             width: stacked.width, height: stacked.height,
+                                             nameHint: nameHint)
+            let kind = stacked.travel > 3
+                ? String(format: "moved %.0f px", stacked.travel)
+                : "stacked in place"
+            setCaptureStatus(String(
+                format: "%@ saved as %@ \u{2014} %dx%d from %d frames (%d dropped), %@%@.",
+                what, url.lastPathComponent, stacked.width, stacked.height,
+                stacked.framesUsed, stacked.framesRejected, kind,
+                stacked.coverage < 0.995
+                    ? String(format: ", %.0f%% covered", stacked.coverage * 100) : ""))
+        } catch {
+            setCaptureStatus(error.localizedDescription)
         }
     }
 
