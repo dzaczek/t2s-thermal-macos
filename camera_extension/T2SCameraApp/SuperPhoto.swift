@@ -440,9 +440,24 @@ enum SuperPhoto {
 /// and works the same in any direction.
 final class PanoramaBuilder {
 
-    private let width: Int, height: Int
+    /// The sensor's own size, before any warping.
+    private let sensorWidth: Int, sensorHeight: Int
+    /// The size of a frame once warped, which is what the canvas works in.
+    private var width = 0, height = 0
     private let canvas: SuperPhoto.Canvas
     private let factor: Int
+
+    /// The lens, when the sweep should be treated as the camera turning. Nil
+    /// treats it as the camera sliding, which is right when it really is
+    /// sliding along a wall and which the tests use to check that half on its
+    /// own.
+    private let optics: Optics?
+
+    /// Focal lengths worked out from the sweep as it went. Kept so the app can
+    /// save a measured value and stop relying on the guess.
+    private var focalEstimates: [Double] = []
+    private var previousRaw: [Double]?
+    private var framesSinceFocalCheck = 0
 
     private var keyframe: [Double]?
     private var keyframeOffset = (dx: 0.0, dy: 0.0)
@@ -460,11 +475,22 @@ final class PanoramaBuilder {
     /// A third of the sensor still leaves plenty of overlap to match on.
     private static let keyframeDistance = 0.33
 
-    init(width: Int, height: Int, factor: Int = 2, maxCells: Int = 24_000_000) {
-        self.width = width
-        self.height = height
+    init(width: Int, height: Int, optics: Optics? = nil,
+         factor: Int = 2, maxCells: Int = 24_000_000) {
+        self.sensorWidth = width
+        self.sensorHeight = height
+        self.optics = optics
         self.factor = factor
         self.canvas = SuperPhoto.Canvas(factor: factor, maxCells: maxCells)
+    }
+
+    /// What the sweep itself said the focal length is, once enough of it has
+    /// been seen. The middle value rather than the average: one bad pair
+    /// should not drag it.
+    var measuredFocal: Double? {
+        guard focalEstimates.count >= 5 else { return nil }
+        let sorted = focalEstimates.sorted()
+        return sorted[sorted.count / 2]
     }
 
     var canvasSize: (width: Int, height: Int) { (canvas.width, canvas.height) }
@@ -472,9 +498,26 @@ final class PanoramaBuilder {
 
     /// Adds a frame. False means it could not be placed: either it did not
     /// match what came before, or the canvas is full.
+    /// Takes a frame straight off the sensor. Warping, if any, happens here,
+    /// so nothing outside has to know whether the sweep is being treated as a
+    /// turn or a slide.
     @discardableResult
-    func add(_ frame: [Double]) -> Bool {
-        guard frame.count == width * height, !isFull else { return false }
+    func add(_ raw: [Double]) -> Bool {
+        guard raw.count == sensorWidth * sensorHeight, !isFull else { return false }
+        measureFocal(from: raw)
+
+        let frame: [Double]
+        if let optics {
+            let warped = Optics.cylindrical(raw, width: sensorWidth, height: sensorHeight,
+                                            focalPixels: optics.focalPixels)
+            frame = warped.values
+            width = warped.width
+            height = warped.height
+        } else {
+            frame = raw
+            width = sensorWidth
+            height = sensorHeight
+        }
 
         guard let keyframe else {
             guard canvas.reserve(frameWidth: width, frameHeight: height,
@@ -524,6 +567,25 @@ final class PanoramaBuilder {
             keyframeOffset = offset
         }
         return true
+    }
+
+    /// Works the lens out from the sweep, now and then rather than every
+    /// frame: the measurement wants a decent movement between the two frames
+    /// it compares, and it is not cheap enough to run at twenty-five a second
+    /// for no extra accuracy.
+    private func measureFocal(from raw: [Double]) {
+        framesSinceFocalCheck += 1
+        guard focalEstimates.count < 15, framesSinceFocalCheck >= 4 else {
+            if previousRaw == nil { previousRaw = raw }
+            return
+        }
+        framesSinceFocalCheck = 0
+        defer { previousRaw = raw }
+        guard let previous = previousRaw else { return }
+        if let f = Optics.estimateFocal(previous, raw,
+                                        width: sensorWidth, height: sensorHeight) {
+            focalEstimates.append(f)
+        }
     }
 
     func finish() -> SuperPhoto.Result? {

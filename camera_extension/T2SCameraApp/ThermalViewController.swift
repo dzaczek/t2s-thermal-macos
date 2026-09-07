@@ -175,6 +175,9 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     /// asking anyone to hold a pose.
     private static let superPhotoFrames = 24
 
+    /// The lens, measured from sweeps rather than taken from a datasheet.
+    private var optics = Optics.load()
+
     /// A sweep in progress. Frames are added on their own queue: laying one
     /// down costs a couple of milliseconds and the live view should not wait
     /// for it, least of all for the seconds it takes to grow the canvas.
@@ -997,13 +1000,16 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         }
         let size = frameSize
         panoramaQueue.sync {
-            panorama = PanoramaBuilder(width: size.width, height: size.height)
+            panorama = PanoramaBuilder(width: size.width, height: size.height, optics: optics)
         }
         panoramaButton.title = "Finish Panorama"
-        setCaptureStatus("Panorama started. Sweep the camera slowly \u{2014} any direction, "
-                         + "and back over the same ground if you like. Keep it the same way up: "
-                         + "turning it is the one movement this cannot follow. "
-                         + "Press again when you are done.")
+        setCaptureStatus(String(
+            format: "Panorama started. Sweep slowly \u{2014} any direction, and back over the "
+                    + "same ground if you like. Keep it the same way up: rolling it is the one "
+                    + "movement this cannot follow. Lens: %.0f px, %.0f\u{00B0} across%@. "
+                    + "Press again when you are done.",
+            optics.focalPixels, optics.horizontalFieldOfView(width: size.width),
+            optics.isMeasured ? "" : " (still the starting guess)"))
     }
 
     private func finishPanorama() {
@@ -1021,6 +1027,21 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             self.setCaptureStatus(String(format: "Panorama: drawing %dx%d\u{2026}",
                                          result.width, result.height))
             self.saveStacked(result, nameHint: "T2S_pano", what: "Panorama")
+
+            // The sweep also says what the lens is. Saved rather than applied
+            // now: the frames just laid down were warped with the old value,
+            // and changing it half way would have made them disagree.
+            if let measured = builder.measuredFocal {
+                let sensor = self.frameSize
+                var updated = self.optics
+                updated.focalPixels = measured
+                updated.save()
+                DispatchQueue.main.async { self.optics = updated }
+                self.setCaptureStatus(String(
+                    format: "This sweep measured the lens at %.0f px, %.0f\u{00B0} across. "
+                            + "Saved \u{2014} the next panorama will use it.",
+                    measured, updated.horizontalFieldOfView(width: sensor.width)))
+            }
         }
     }
 

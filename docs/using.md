@@ -116,10 +116,34 @@ cannot follow — there is no gyroscope to ask and no angle is worked out from
 the picture, so twisted frames simply fail to match and are dropped. Slide it
 about as much as you like; do not roll your wrist.
 
-This is not Hugin. There is no lens model and no projection onto a sphere, so
-a sweep wide enough to need one will not close up properly. For a wall, a
-rack, a roof or a run of pipework — the things a thermal camera is usually
-pointed at — sliding it sideways is exactly right.
+### The lens, and why the app measures it
+
+Sweeping a camera is turning it, not sliding it, and those are not the same
+picture. Turn the camera and a point near the edge of the frame crosses the
+sensor further than a point in the middle — by about a fifth at the edge of
+this camera's field. Treated as a slide, no single shift lines the whole frame
+up, so the edges land slightly wrong and the seams go soft.
+
+So each frame is warped onto a cylinder first. In those coordinates a turn
+*is* a slide, and everything downstream agrees with what the camera is
+actually doing. One number is needed for it: the focal length in pixels.
+
+The published figures for this camera contradict each other — a 3.2 mm lens on
+a 12 micron pitch works out at about 51° across, while the specification sheets
+say 56° — so the app does not take either on trust. **It measures the lens from
+your sweep.** A turn moves the edge of the frame further than the middle by
+exactly `1 + x²/f²`, so comparing the shift at the centre against the shift at
+the edge gives `f` directly. The first panorama you take reports what it found
+and saves it; every one after that uses the measured value. Against a simulated
+camera of known focal length it lands within about 4%.
+
+Until it has been measured the status line says so, and the starting guess sits
+in the middle of the two published figures.
+
+This is still not Hugin: there is no lens distortion model and no projection
+onto a sphere, so a sweep approaching a full turn will not close up. For a
+wall, a rack, a roof or a run of pipework — the things a thermal camera is
+usually pointed at — it holds together.
 
 The status line keeps count as you sweep: frames placed, frames dropped, how
 big the picture is so far and how far you have moved. It stops by itself if
