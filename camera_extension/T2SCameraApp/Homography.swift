@@ -66,6 +66,52 @@ struct Homography: Equatable {
         return candidate
     }
 
+    /// Fits a mapping to more than the four points it strictly needs.
+    ///
+    /// Four points determine a mapping exactly, which sounds like enough and
+    /// is not: every bit of error in locating those four goes straight into
+    /// the answer with nothing to check it against. Five fingertips, each
+    /// found to within a few pixels, give a fit that averages the error out
+    /// instead of following it.
+    ///
+    /// Least squares through the normal equations. The system is eight
+    /// unknowns however many points go in, so this stays as cheap as the
+    /// exact solve.
+    static func fit(_ pairs: [(from: CGPoint, to: CGPoint)]) -> Homography? {
+        guard pairs.count >= 4 else { return nil }
+
+        var normal = [[Double]](repeating: [Double](repeating: 0, count: 9), count: 8)
+        for pair in pairs {
+            let x = Double(pair.from.x), y = Double(pair.from.y)
+            let u = Double(pair.to.x), v = Double(pair.to.y)
+            let rows: [([Double], Double)] = [
+                ([x, y, 1, 0, 0, 0, -x * u, -y * u], u),
+                ([0, 0, 0, x, y, 1, -x * v, -y * v], v)
+            ]
+            for (row, target) in rows {
+                for i in 0..<8 {
+                    for j in 0..<8 { normal[i][j] += row[i] * row[j] }
+                    normal[i][8] += row[i] * target
+                }
+            }
+        }
+
+        guard let h = solveLinearSystem(&normal) else { return nil }
+        let matrix = h + [1.0]
+        guard matrix.allSatisfy({ $0.isFinite }) else { return nil }
+        let candidate = Homography(m: matrix)
+
+        // A fit cannot be checked by reproducing its own points exactly -- it
+        // is not meant to. But it must not be wild: every point should land
+        // somewhere near where it was measured.
+        for pair in pairs {
+            let got = candidate.map(pair.from)
+            let miss = hypot(Double(got.x - pair.to.x), Double(got.y - pair.to.y))
+            if miss > 60 { return nil }
+        }
+        return candidate
+    }
+
     /// The mapping the other way.
     var inverse: Homography? {
         let a = m

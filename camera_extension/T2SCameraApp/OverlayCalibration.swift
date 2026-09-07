@@ -35,6 +35,8 @@ final class OverlayCalibrationWindow: NSWindowController {
         /// The warmest thing in shot, when something is warm enough to be a
         /// finger.
         var warm: (x: Int, y: Int)?
+        /// The fingertips of a hand held up, if one is found.
+        var fingertips: [CGPoint] = []
     }
 
     var thermalProvider: (() -> ThermalPreview?)?
@@ -57,6 +59,13 @@ final class OverlayCalibrationWindow: NSWindowController {
     /// measured off it; without this the marker twitches and there is nothing
     /// to aim at.
     private var recentWarm: [CGPoint] = []
+    /// Fingertips found in each picture, when a hand is held up in both.
+    private var thermalFingers: [CGPoint] = []
+    private var visibleFingers: [CGPoint] = []
+    private var handButton = NSButton()
+    /// Skin detection is not free, so it runs a few times a second rather
+    /// than on every refresh.
+    private var refreshCount = 0
     /// True once those agree closely enough to be worth clicking on.
     private var warmIsSteady = false
 
@@ -123,12 +132,19 @@ final class OverlayCalibrationWindow: NSWindowController {
         content.addSubview(undoButton)
 
         let hint = NSTextField(labelWithString:
-            "Anything warm held up is found for you on the left, marked green once it holds "
-            + "still. Click the left picture yourself to use something else.")
-        hint.frame = NSRect(x: 178, y: 24, width: 630, height: 18)
+            "Or click the same thing in both pictures, four times.")
+        hint.frame = NSRect(x: 390, y: 24, width: 420, height: 18)
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
         content.addSubview(hint)
+
+        handButton = NSButton(title: "Use the Five Fingertips", target: self,
+                              action: #selector(useHand(_:)))
+        handButton.frame = NSRect(x: 178, y: 20, width: 200, height: 26)
+        handButton.isEnabled = false
+        handButton.toolTip = "Hold a hand up where both cameras can see it. Five points at once, "
+            + "spread across the picture, is a better calibration than four taken one at a time."
+        content.addSubview(handButton)
 
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel(_:)))
         cancel.frame = NSRect(x: 820, y: 20, width: 104, height: 26)
@@ -149,7 +165,20 @@ final class OverlayCalibrationWindow: NSWindowController {
     }
 
     private func refresh() {
-        visibleView.show(visibleFrameProvider?())
+        let picture = visibleFrameProvider?()
+        visibleView.show(picture)
+
+        refreshCount += 1
+        if refreshCount % 3 == 0, let picture {
+            if let hand = HandDetector.visibleHand(picture) {
+                visibleFingers = HandDetector.fingertips(of: hand, width: picture.width,
+                                                         height: picture.height)
+            } else {
+                visibleFingers = []
+            }
+            visibleView.candidates = visibleFingers
+            handButton.isEnabled = thermalFingers.count == 5 && visibleFingers.count == 5
+        }
 
         guard let thermal = thermalProvider?() else {
             detectedWarm = nil
@@ -159,6 +188,8 @@ final class OverlayCalibrationWindow: NSWindowController {
         thermalView.show(VisibleCapture.Frame(rgb: thermal.rgb,
                                               width: thermal.width, height: thermal.height))
         settle(on: thermal.warm.map { CGPoint(x: $0.x, y: $0.y) })
+        thermalFingers = thermal.fingertips
+        thermalView.candidates = thermalFingers
         // A point you picked yourself stays put; otherwise the marker follows
         // whatever is warmest.
         thermalView.highlight = chosenThermal ?? detectedWarm
@@ -261,6 +292,23 @@ final class OverlayCalibrationWindow: NSWindowController {
         if let message { statusLabel.stringValue = message }
     }
 
+    /// Takes the whole calibration from one hand held up in front of both
+    /// cameras.
+    @objc private func useHand(_ sender: Any?) {
+        guard thermalFingers.count == 5, visibleFingers.count == 5 else { return }
+        guard let paired = HandDetector.pair(thermal: thermalFingers, visible: visibleFingers) else {
+            // The two sets were found but do not correspond: a misdetected
+            // finger on either side, or two different hands. Saying so beats
+            // saving a mapping that puts the pictures in the wrong place.
+            statusLabel.stringValue = "Those ten points do not line up with each other. Hold one "
+                + "hand up so both cameras see all five fingers, spread apart, and try again."
+            NSSound.beep()
+            return
+        }
+        onFinished?(paired.homography)
+        close()
+    }
+
     @objc private func turnThermal(_ sender: NSSegmentedControl) {
         thermalView.turn(clockwise: sender.selectedSegment == 1)
     }
@@ -306,6 +354,8 @@ private final class CalibrationImageView: NSView {
     /// Which point is being taken, drawn on the picture so it is where the
     /// eye already is rather than in a label somewhere else.
     var pointNumber: Int? { didSet { needsDisplay = true } }
+    /// Fingertips the app has found, offered rather than taken.
+    var candidates: [CGPoint] = [] { didSet { needsDisplay = true } }
 
     private var rotation = ImageRotation.none
     private var image: CGImage?
@@ -397,6 +447,23 @@ private final class CalibrationImageView: NSView {
                 }
                 ctx.strokePath()
             }
+        }
+
+        // Fingertips found but not yet used: drawn lightly, since they are an
+        // offer rather than a decision.
+        for (i, candidate) in candidates.enumerated() {
+            guard let p = viewPoint(candidate) else { continue }
+            ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.8).cgColor)
+            ctx.setLineWidth(4)
+            ctx.strokeEllipse(in: CGRect(x: p.x - 9, y: p.y - 9, width: 18, height: 18))
+            ctx.setStrokeColor(NSColor.systemTeal.cgColor)
+            ctx.setLineWidth(2)
+            ctx.strokeEllipse(in: CGRect(x: p.x - 9, y: p.y - 9, width: 18, height: 18))
+            let letter = String(UnicodeScalar(65 + i)!) as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: 12),
+                .foregroundColor: NSColor.systemTeal]
+            letter.draw(at: CGPoint(x: p.x + 11, y: p.y - 7), withAttributes: attributes)
         }
 
         for (i, mark) in marks.enumerated() {

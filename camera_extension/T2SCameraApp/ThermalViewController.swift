@@ -1133,9 +1133,13 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             for (i, v) in grey.enumerated() {
                 rgb[i * 3] = v; rgb[i * 3 + 1] = v; rgb[i * 3 + 2] = v
             }
+            let hand = HandDetector.thermalHand(temps, width: w, height: h)
             return OverlayCalibrationWindow.ThermalPreview(
                 rgb: rgb, width: w, height: h,
-                warm: Overlay.warmPoint(temps, width: w, height: h))
+                warm: hand.map { (Int($0.centre.x), Int($0.centre.y)) },
+                fingertips: hand.map {
+                    HandDetector.fingertips(of: $0, width: w, height: h)
+                } ?? [])
         }
         window.onFinished = { [weak self] homography in
             guard let self else { return }
