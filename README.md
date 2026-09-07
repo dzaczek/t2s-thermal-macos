@@ -40,8 +40,18 @@ anything first. Also a reliable way to derail a standup.
   watching, which is what you want when you are hunting for a fault
 * Live temperature-vs-time plots, docked above or below the image, or drawn as
   sparklines next to each measurement
+* Differences, which is what an inspection actually turns on: read a box
+  against another box or against the air, and the app shows the gap rather
+  than leaving you to subtract two numbers in your head
+* A list of typical emissivities to pick from, and a damp-risk overlay that
+  paints every surface sitting at or below the dew point
+* Super photo: it stacks a second of frames into one larger picture. Hold it
+  in your hand and you get the same view at twice the resolution; pan slowly
+  and the canvas grows into a mosaic wider than the sensor can see
 * PNG stills with the full 256x192 temperature matrix beside them as CSV,
   H.264 video, time-lapse, and a running CSV log of your measurements
+* Optionally the sensor's own counts too, so a capture can be decoded again
+  later if your emissivity or calibration turns out to have been wrong
 
 ## Get it
 

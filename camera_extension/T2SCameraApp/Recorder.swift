@@ -31,6 +31,10 @@ final class Recorder {
 
     /// Also write the temperature matrix next to each still.
     var savesCSV = true
+    /// Keep the sensor's own counts alongside the picture. Off by default:
+    /// it is 100 KB a shot and only earns its keep if you might want to
+    /// decode the capture again under different settings.
+    var savesRaw = false
 
     private(set) var isRecordingVideo = false
     private(set) var isRunningInterval = false
@@ -70,9 +74,11 @@ final class Recorder {
     /// i.e. still measurable after the fact.
     @discardableResult
     func savePhoto(_ image: CGImage, temperatures: [Double]?,
-                   width: Int, height: Int) throws -> URL {
+                   width: Int, height: Int,
+                   raw: [UInt16]? = nil, rawInfo: [String: Any] = [:],
+                   nameHint: String = "T2S") throws -> URL {
         try Recorder.ensureDirectory()
-        let base = "T2S_" + Recorder.timestamp()
+        let base = nameHint + "_" + Recorder.timestamp()
         let url = Recorder.outputDirectory.appendingPathComponent(base + ".png")
 
         let rep = NSBitmapImageRep(cgImage: image)
@@ -85,7 +91,55 @@ final class Recorder {
             let csv = Recorder.outputDirectory.appendingPathComponent(base + ".csv")
             try Recorder.writeCSV(temps, width: width, height: height, to: csv)
         }
+        if savesRaw, let raw {
+            let file = Recorder.outputDirectory.appendingPathComponent(base + ".t2sraw")
+            try Recorder.writeRaw(raw, info: rawInfo, to: file)
+        }
         return url
+    }
+
+    /// Writes the sensor's own output, untouched.
+    ///
+    /// The CSV holds temperatures, and a temperature is already an
+    /// interpretation: it depends on the emissivity, the calibration and the
+    /// air settings in force when the shutter went. Those are judgements, and
+    /// judgements turn out to be wrong. The raw counts are not an
+    /// interpretation, so a capture kept this way can be decoded again later
+    /// with better numbers -- including the metadata rows the camera appends,
+    /// which carry its own calibration constants for that frame.
+    ///
+    /// The layout is deliberately dull, so anything can read it:
+    ///
+    ///     "T2SRAW01"            8 bytes
+    ///     header length         uint32, little endian
+    ///     header                that many bytes of JSON
+    ///     samples               width * rows uint16, little endian, row major
+    ///
+    /// The header says how to read the rest and under what settings it was
+    /// taken.
+    static func writeRaw(_ raw: [UInt16], info: [String: Any], to url: URL) throws {
+        var header = info
+        header["format"] = "t2sraw"
+        header["version"] = 1
+        header["samples"] = raw.count
+        header["byteOrder"] = "little"
+        header["sampleBits"] = 16
+        header["taken"] = ISO8601DateFormatter().string(from: Date())
+
+        let json = try JSONSerialization.data(withJSONObject: header,
+                                              options: [.sortedKeys, .prettyPrinted])
+        var out = Data("T2SRAW01".utf8)
+        var length = UInt32(json.count).littleEndian
+        withUnsafeBytes(of: &length) { out.append(contentsOf: $0) }
+        out.append(json)
+
+        var samples = Data(capacity: raw.count * 2)
+        for value in raw {
+            var little = value.littleEndian
+            withUnsafeBytes(of: &little) { samples.append(contentsOf: $0) }
+        }
+        out.append(samples)
+        try out.write(to: url, options: .atomic)
     }
 
     private static func writeCSV(_ temps: [Double], width: Int, height: Int, to url: URL) throws {

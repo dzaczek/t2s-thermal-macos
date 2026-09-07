@@ -82,6 +82,55 @@ shifts everything together without breaking the match.
 
 **View ▸ Stop Tracking Everything** pins everything back down.
 
+## Super photo
+
+**Capture ▸ Super Photo**, or the button in the side panel, or ⇧⌘S. It gathers
+about a second of frames and lays them onto one grid twice as fine as the
+sensor.
+
+The trick is that your hand never holds still. Each frame samples the scene
+from a slightly different position, so the stack carries detail no single
+frame could. **Hold the camera in your hand — the shake is what makes it
+work.** On a tripod there is nothing to recover beyond less noise.
+
+The same thing gives you two different results depending on how much you move:
+
+- **Barely move** and you get the same view at twice the resolution.
+- **Pan slowly** and the canvas grows to cover wherever the frames landed, and
+  you get a mosaic wider than the sensor can see at once.
+
+What it will not do: it only works out sideways movement, so **do not twist
+the camera** as you pan — turned frames cannot be lined up and get thrown out.
+It also needs something to line up on. Point it at a blank wall and it says so
+rather than inventing detail.
+
+The status line reports how many frames were used, how many were dropped, how
+far it moved, and for a mosaic how much of the picture is real rather than
+filled in at the ragged edges.
+
+## Keeping the sensor's own numbers
+
+Tick **+ raw** next to Save Photo and each capture also writes a `.t2sraw`
+file, about 100 KB.
+
+The CSV beside a photo holds temperatures, and a temperature is already an
+interpretation: it depends on the emissivity you set, the calibration in force
+and the air settings at the time. Those are judgements, and judgements turn
+out to be wrong. The raw counts are not a judgement, so a capture kept this
+way can be decoded again later with better numbers — including the four
+metadata rows the camera appends to every frame, which carry its own
+calibration constants for that exact frame.
+
+The format is deliberately dull so anything can read it: an eight-byte marker,
+a JSON header saying how to read the rest and under what settings it was
+taken, then the samples as little-endian 16-bit values. There is a reader in
+the repository:
+
+```bash
+python3 tools/read_t2sraw.py shot.t2sraw
+python3 tools/read_t2sraw.py shot.t2sraw --csv counts.csv
+```
+
 ## Rotating the image
 
 Three buttons in the toolbar: **↺**, **Reset**, **↻**. Or **⌘[**, **⌘]** and

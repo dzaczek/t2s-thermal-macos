@@ -108,6 +108,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private var intervalSecondsField = NSTextField()
     private var intervalMinutesField = NSTextField()
     private var csvToggle = NSButton()
+    private var rawToggle = NSButton()
     private var captureStatus = NSTextField(labelWithString: "")
     private var chartView = ChartView()
     private let controlBar = NSView()
@@ -142,7 +143,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private let panelScroll = NSScrollView()
     private let panelContent = NSView()
     /// Tall enough for every control with room for the status text underneath.
-    private static let panelContentHeight: CGFloat = 820
+    private static let panelContentHeight: CGFloat = 860
     private var hasScrolledPanelToTop = false
 
     /// Latest decoded frame, kept so calibration and capture can act on it.
@@ -154,6 +155,9 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private let frameLock = NSLock()
     private var lastImage: CGImage?
     private var lastTemps: [Double] = []
+    /// The sensor's own counts for the latest frame, kept so a capture can be
+    /// saved in a form that survives a change of mind about calibration.
+    private var lastRawFrame: [UInt16] = []
     private var lastResults: [(Measurement, MeasurementResult)] = []
     private var lastLogRow: [String: Double] = [:]
 
@@ -162,6 +166,14 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private var lastTableReload = Date.distantPast
 
     private var nucInProgress = false
+
+    /// Frames being gathered for a super photo, and the lock that lets the
+    /// button start it on the main queue while the capture queue fills it.
+    private var superFrames: [[Double]]?
+    private let superLock = NSLock()
+    /// About a second of frames. Enough shifts to fill a finer grid without
+    /// asking anyone to hold a pose.
+    private static let superPhotoFrames = 24
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0,
@@ -453,6 +465,21 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         csvToggle.frame = NSRect(x: 150, y: y + 3, width: 90, height: 22)
         csvToggle.toolTip = "Also save the temperature matrix, so the capture stays measurable."
         panel.addSubview(csvToggle)
+        y -= 30
+
+        let superButton = NSButton(title: "Super Photo", target: self,
+                                   action: #selector(captureSuperPhoto(_:)))
+        superButton.frame = NSRect(x: 12, y: y, width: 130, height: 26)
+        superButton.toolTip = "Stacks a second of frames into one larger picture. "
+            + "Hold it in your hand: the shake is what makes it work."
+        panel.addSubview(superButton)
+        rawToggle = NSButton(checkboxWithTitle: "+ raw", target: self,
+                             action: #selector(toggleRaw(_:)))
+        rawToggle.state = .off
+        rawToggle.frame = NSRect(x: 150, y: y + 3, width: 90, height: 22)
+        rawToggle.toolTip = "Also save the sensor's own counts, so the capture can be "
+            + "decoded again later under different settings."
+        panel.addSubview(rawToggle)
         y -= 32
 
         recordButton = NSButton(title: "Record Video", target: self, action: #selector(toggleVideo(_:)))
@@ -786,9 +813,12 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         frameLock.lock()
         lastImage = image
         lastTemps = temps
+        lastRawFrame = raw
         lastResults = results
         lastLogRow = row
         frameLock.unlock()
+
+        collectSuperPhotoFrame(temps, width: fw, height: fh)
 
         if publishToVirtualCam { virtualCam.publish(image) }
         let tPublished = CFAbsoluteTimeGetCurrent()
@@ -866,6 +896,131 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         frameLock.lock(); defer { frameLock.unlock() }
         guard let image = lastImage else { return nil }
         return (image, lastTemps)
+    }
+
+    private func currentRawFrame() -> [UInt16] {
+        frameLock.lock(); defer { frameLock.unlock() }
+        return lastRawFrame
+    }
+
+    /// What the raw file needs to say about itself for the counts in it to
+    /// mean anything later.
+    private func rawInfo() -> [String: Any] {
+        [
+            "width": ThermalCapture.width,
+            "imageRows": ThermalCapture.imageHeight,
+            "totalRows": ThermalCapture.fullHeight,
+            "range": measurementRange == .high ? "high" : "normal",
+            "shutterOffset": calibration.shutterOffset,
+            "scale": calibration.scale,
+            "bias": calibration.bias,
+            "calibrated": calibration.isCalibrated,
+            "rotationQuarterTurns": rotation.rawValue,
+            "emissivity": 0.95,
+            "airTemp": ambient.airTemp,
+            "humidityPercent": ambient.humidity,
+            "reflectedTemp": ambient.reflectedTemp,
+            "distanceMetres": ambient.distance,
+            "app": "T2SCamera \(About.version) (\(About.build))",
+            "note": "Rows beyond imageRows are the camera's own metadata, "
+                + "not picture. Rotation is not applied to these samples."
+        ]
+    }
+
+    // MARK: - Super photo
+
+    /// Adds a frame to a stack being gathered, and finishes when there are
+    /// enough. Runs on the capture queue.
+    private func collectSuperPhotoFrame(_ temps: [Double], width: Int, height: Int) {
+        superLock.lock()
+        guard superFrames != nil else { superLock.unlock(); return }
+        superFrames?.append(temps)
+        let gathered = superFrames?.count ?? 0
+        var finished: [[Double]]?
+        if gathered >= ThermalViewController.superPhotoFrames {
+            finished = superFrames
+            superFrames = nil
+        }
+        superLock.unlock()
+
+        if let finished {
+            buildSuperPhoto(finished, width: width, height: height)
+        } else {
+            setCaptureStatus("Super photo: \(gathered) of "
+                             + "\(ThermalViewController.superPhotoFrames) frames\u{2026}")
+        }
+    }
+
+    @objc func captureSuperPhoto(_ sender: Any?) {
+        superLock.lock()
+        let alreadyRunning = superFrames != nil
+        if !alreadyRunning { superFrames = [] }
+        superLock.unlock()
+        guard !alreadyRunning else { return }
+        setCaptureStatus("Super photo: hold the camera in your hand and let it drift, or "
+                         + "pan it slowly for a wider picture. Do not twist it.")
+    }
+
+    /// Stacks the gathered frames and saves the result. The stacking is not
+    /// quick, so it stays off the capture queue and the live view keeps
+    /// running while it happens.
+    private func buildSuperPhoto(_ frames: [[Double]], width: Int, height: Int) {
+        setCaptureStatus("Super photo: lining up \(frames.count) frames\u{2026}")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            guard let stacked = SuperPhoto.stack(frames, width: width, height: height) else {
+                self.setCaptureStatus("Super photo failed: the frames could not be lined up. "
+                                      + "A blank wall has nothing to line up on, and the camera "
+                                      + "must not be turned as it moves.")
+                return
+            }
+
+            let extremes = ThermalProcessor.extremes(stacked.values)
+            let scaleMin = self.manualRange ? self.manualMin : extremes.minValue
+            let scaleMax = self.manualRange ? self.manualMax : extremes.maxValue
+            let frame = ThermalRenderer.Frame(
+                temperatures: stacked.values,
+                normalized: ThermalProcessor.normalize(stacked.values, from: scaleMin, to: scaleMax),
+                imageWidth: stacked.width,
+                imageHeight: stacked.height,
+                extremes: extremes,
+                centerTemp: stacked.values[(stacked.height / 2) * stacked.width + stacked.width / 2],
+                palette: self.palette,
+                calibrationNote: self.calibrationNote,
+                scaleMin: scaleMin,
+                scaleMax: scaleMax,
+                // The objects on screen are placed in sensor pixels and this
+                // picture is a different size and often a different view, so
+                // carrying them over would put them on the wrong things.
+                measurements: [],
+                dewPointThreshold: self.showDewPoint
+                    ? self.ambient.dewPoint + self.dewPointMargin : nil,
+                dewPoint: self.showDewPoint ? self.ambient.dewPoint : nil,
+                showsMax: self.showMax,
+                showsMin: self.showMin,
+                showsCentre: self.showCentre)
+
+            guard let image = ThermalRenderer.render(frame) else {
+                self.setCaptureStatus("Super photo failed while drawing.")
+                return
+            }
+            do {
+                let url = try self.recorder.savePhoto(image, temperatures: stacked.values,
+                                                      width: stacked.width, height: stacked.height,
+                                                      nameHint: "T2S_super")
+                let kind = stacked.travel > 3
+                    ? String(format: "mosaic, moved %.0f pixels", stacked.travel)
+                    : "stacked in place"
+                self.setCaptureStatus(String(
+                    format: "Saved %@ \u{2014} %dx%d from %d frames (%d dropped), %@%@.",
+                    url.lastPathComponent, stacked.width, stacked.height,
+                    stacked.framesUsed, stacked.framesRejected, kind,
+                    stacked.coverage < 0.995
+                        ? String(format: ", %.0f%% covered", stacked.coverage * 100) : ""))
+            } catch {
+                self.setCaptureStatus(error.localizedDescription)
+            }
+        }
     }
 
     // MARK: - Image actions
@@ -1213,6 +1368,13 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         recorder.savesCSV = (sender.state == .on)
     }
 
+    @objc private func toggleRaw(_ sender: NSButton) {
+        recorder.savesRaw = (sender.state == .on)
+        setCaptureStatus(recorder.savesRaw
+            ? "Saving the sensor's own counts beside each photo, about 100 KB a shot."
+            : "Raw sensor counts are no longer saved.")
+    }
+
     @objc func savePhoto(_ sender: Any?) {
         guard let (image, temps) = currentFrame() else {
             setCaptureStatus("No frame to save yet.")
@@ -1221,9 +1383,14 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         do {
             let url = try recorder.savePhoto(image, temperatures: temps,
                                              width: frameSize.width,
-                                             height: frameSize.height)
+                                             height: frameSize.height,
+                                             raw: currentRawFrame(),
+                                             rawInfo: rawInfo())
+            var extras: [String] = []
+            if recorder.savesCSV { extras.append("CSV") }
+            if recorder.savesRaw { extras.append("raw") }
             setCaptureStatus("Saved \(url.lastPathComponent)"
-                             + (recorder.savesCSV ? " (+ CSV)" : ""))
+                             + (extras.isEmpty ? "" : " (+ \(extras.joined(separator: ", ")))"))
         } catch {
             setCaptureStatus(error.localizedDescription)
         }
