@@ -113,8 +113,8 @@ struct ThermalRenderer {
         /// keyed by object name.
         var deltas: [String: Double] = [:]
         /// An ordinary camera's picture of the same scene, already lined up
-        /// pixel for pixel and scaled to 0...255. Nil when there is none.
-        var visible: [Double]?
+        /// pixel for pixel, three bytes a pixel. Nil when there is none.
+        var visible: [UInt8]?
         /// How much of it to mix in: 0 is all thermal, 1 all webcam.
         var visibleBlend: Double = 0
         var recordingNote: String?
@@ -177,15 +177,14 @@ struct ThermalRenderer {
             var r = Double(lut[v * 3 + 0])
             var g = Double(lut[v * 3 + 1])
             var b = Double(lut[v * 3 + 2])
-            // The webcam picture goes in as plain grey. Mixing it towards
-            // grey rather than modulating the colour keeps the blend
-            // predictable: the slider does exactly what it looks like it
-            // does, and at nought the thermal image is untouched.
-            if let visible = frame.visible, blend > 0, i < visible.count {
-                let grey = visible[i]
-                r += (grey - r) * blend
-                g += (grey - g) * blend
-                b += (grey - b) * blend
+            // Mixed straight towards the webcam's own colours rather than
+            // modulating the thermal ones: the slider then does exactly what
+            // it looks like it does, and at nought the thermal image is
+            // untouched.
+            if let visible = frame.visible, blend > 0, i * 3 + 2 < visible.count {
+                r += (Double(visible[i * 3]) - r) * blend
+                g += (Double(visible[i * 3 + 1]) - g) * blend
+                b += (Double(visible[i * 3 + 2]) - b) * blend
             }
             rgba[i * 4 + 0] = UInt8(max(0, min(255, r)))
             rgba[i * 4 + 1] = UInt8(max(0, min(255, g)))

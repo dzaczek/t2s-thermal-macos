@@ -45,14 +45,21 @@ enum ImageRotation: Int, CaseIterable {
     }
 
     /// Turns a per-pixel buffer. `width`/`height` describe the input.
-    func apply<T>(_ values: [T], width: Int, height: Int) -> [T] {
-        guard self != .none, values.count == width * height else { return values }
+    ///
+    /// `components` covers buffers that hold more than one value a pixel --
+    /// three bytes for a colour picture, say -- which are turned as whole
+    /// pixels rather than as loose numbers.
+    func apply<T>(_ values: [T], width: Int, height: Int, components: Int = 1) -> [T] {
+        guard self != .none, components >= 1,
+              values.count == width * height * components else { return values }
         let out = size(width: width, height: height)
         var result = values
         for y in 0..<height {
             for x in 0..<width {
                 let p = map(x: x, y: y, width: width, height: height)
-                result[p.y * out.width + p.x] = values[y * width + x]
+                let from = (y * width + x) * components
+                let to = (p.y * out.width + p.x) * components
+                for c in 0..<components { result[to + c] = values[from + c] }
             }
         }
         return result

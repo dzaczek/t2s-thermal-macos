@@ -27,7 +27,10 @@ final class OverlayCalibrationWindow: NSWindowController {
     /// What the thermal side has to say right now. Everything is in the
     /// sensor's own coordinates, unturned; the views do their own turning.
     struct ThermalPreview {
-        var grey: [Double]
+        /// Three bytes a pixel, the same in each: the thermal picture is grey
+        /// here on purpose, so the eye is not asked to match two sets of
+        /// false colours against each other.
+        var rgb: [UInt8]
         var width: Int, height: Int
         /// The warmest thing in shot, when something is warm enough to be a
         /// finger.
@@ -147,7 +150,7 @@ final class OverlayCalibrationWindow: NSWindowController {
             thermalView.show(nil)
             return
         }
-        thermalView.show(VisibleCapture.Frame(grey: thermal.grey,
+        thermalView.show(VisibleCapture.Frame(rgb: thermal.rgb,
                                               width: thermal.width, height: thermal.height))
         detectedWarm = thermal.warm.map { CGPoint(x: $0.x, y: $0.y) }
         // A point you picked yourself stays put; otherwise the marker follows
@@ -279,20 +282,22 @@ private final class CalibrationImageView: NSView {
     }
 
     func show(_ frame: VisibleCapture.Frame?) {
-        guard let frame, frame.grey.count == frame.width * frame.height else {
+        guard let frame, frame.rgb.count == frame.width * frame.height * 3 else {
             image = nil
             needsDisplay = true
             return
         }
         cameraSize = CGSize(width: frame.width, height: frame.height)
-        let grey = rotation.apply(frame.grey, width: frame.width, height: frame.height)
+        let turned = rotation.apply(frame.rgb, width: frame.width, height: frame.height,
+                                    components: 3)
         let size = rotation.size(width: frame.width, height: frame.height)
         shownSize = CGSize(width: size.width, height: size.height)
 
         var pixels = [UInt8](repeating: 255, count: size.width * size.height * 4)
         for i in 0..<(size.width * size.height) {
-            let v = UInt8(max(0, min(255, grey[i])))
-            pixels[i * 4 + 0] = v; pixels[i * 4 + 1] = v; pixels[i * 4 + 2] = v
+            pixels[i * 4 + 0] = turned[i * 3]
+            pixels[i * 4 + 1] = turned[i * 3 + 1]
+            pixels[i * 4 + 2] = turned[i * 3 + 2]
         }
         if let provider = CGDataProvider(data: Data(pixels) as CFData) {
             image = CGImage(width: size.width, height: size.height, bitsPerComponent: 8,

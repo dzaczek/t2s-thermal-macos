@@ -144,7 +144,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private let panelScroll = NSScrollView()
     private let panelContent = NSView()
     /// Tall enough for every control with room for the status text underneath.
-    private static let panelContentHeight: CGFloat = 996
+    private static let panelContentHeight: CGFloat = 1024
     private var hasScrolledPanelToTop = false
 
     /// Latest decoded frame, kept so calibration and capture can act on it.
@@ -190,6 +190,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private var visiblePopup = NSPopUpButton()
     private var overlayCalibrateButton = NSButton()
     private var overlayBlendSlider = NSSlider()
+    private var overlayColourToggle = NSButton()
     private var overlayWindow: OverlayCalibrationWindow?
 
     /// A sweep in progress. Frames are added on their own queue: laying one
@@ -504,7 +505,16 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         overlayBlendSlider.frame = NSRect(x: 208, y: y + 2, width: 80, height: 22)
         overlayBlendSlider.toolTip = "All thermal on the left, all webcam on the right."
         panel.addSubview(overlayBlendSlider)
-        y -= 40
+        y -= 28
+
+        overlayColourToggle = NSButton(checkboxWithTitle: "Webcam in colour", target: self,
+                                       action: #selector(overlayColourChanged(_:)))
+        overlayColourToggle.state = overlay.colour ? .on : .off
+        overlayColourToggle.frame = NSRect(x: 12, y: y, width: W - 24, height: 22)
+        overlayColourToggle.toolTip = "Keep the webcam's own colours. Worth having wherever the "
+            + "colour carries information \u{2014} a board, a loom of wires, a labelled panel."
+        panel.addSubview(overlayColourToggle)
+        y -= 34
 
         let capTitle = NSTextField(labelWithString: "Capture")
         capTitle.frame = NSRect(x: 12, y: y, width: W - 24, height: 18)
@@ -755,10 +765,10 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         // The webcam picture is brought into sensor coordinates and then
         // turned with everything else, so rotating the view cannot put the
         // two pictures out of step.
-        var visibleLayer: [Double]?
+        var visibleLayer: [UInt8]?
         if overlay.isOn, let picture = visible.currentFrame(),
            let aligned = overlay.aligned(picture, thermalWidth: W, thermalHeight: H) {
-            visibleLayer = turn.apply(aligned, width: W, height: H)
+            visibleLayer = turn.apply(aligned, width: W, height: H, components: 3)
         }
 
         let extremes = ThermalProcessor.extremes(temps)
@@ -1084,6 +1094,11 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         rebuildVisibleCameraList()
     }
 
+    @objc private func overlayColourChanged(_ sender: NSButton) {
+        overlay.colour = (sender.state == .on)
+        overlay.save()
+    }
+
     @objc private func overlayBlendChanged(_ sender: NSSlider) {
         overlay.blend = sender.doubleValue
         overlay.save()
@@ -1113,9 +1128,13 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             self.frameLock.unlock()
             let w = ThermalCapture.width, h = ThermalCapture.imageHeight
             guard temps.count == w * h else { return nil }
+            let grey = ThermalProcessor.normalize(temps)
+            var rgb = [UInt8](repeating: 0, count: grey.count * 3)
+            for (i, v) in grey.enumerated() {
+                rgb[i * 3] = v; rgb[i * 3 + 1] = v; rgb[i * 3 + 2] = v
+            }
             return OverlayCalibrationWindow.ThermalPreview(
-                grey: ThermalProcessor.normalize(temps).map(Double.init),
-                width: w, height: h,
+                rgb: rgb, width: w, height: h,
                 warm: Overlay.warmPoint(temps, width: w, height: h))
         }
         window.onFinished = { [weak self] homography in

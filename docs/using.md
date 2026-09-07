@@ -222,6 +222,11 @@ distance you work at.
 
 Move either camera and the calibration is void. Do it again.
 
+The webcam keeps its colour, which matters more than it sounds: inspecting a
+board, half the information is in the colour — which wire, which marking,
+which component. **Webcam in colour** turns that off if two sets of colours
+end up arguing with each other, and then the picture goes in as grey.
+
 The blend slider runs from all thermal to all webcam. The calibration is saved,
 so it survives a restart, and it is stored against the *unrotated* sensor, so
 turning the picture cannot put the two out of step.

@@ -11,16 +11,28 @@ import Foundation
 /// a webcam beside the T2S+, point them the same way, and the app can line
 /// the two up.
 ///
-/// Frames are handed over as grey, at whatever size the camera gives. Colour
-/// is not wanted here: the visible picture is used for edges and outlines
-/// under a false-coloured thermal image, and grey is both smaller and easier
-/// to blend.
+/// Frames are handed over in colour, at whatever size the camera gives.
+/// Colour was left out at first, on the grounds that a picture blended under
+/// a false-coloured thermal image only needs to supply outlines. That is
+/// wrong for the work people actually do with this: inspecting a board, half
+/// the information is in the colour -- which wire, which marking, which
+/// component. Grey is still available as a choice, not as the only option.
 final class VisibleCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 
     struct Frame {
-        var grey: [Double]
+        /// Three bytes a pixel, red first.
+        var rgb: [UInt8]
         var width: Int
         var height: Int
+
+        /// Brightness of one pixel. The usual luma weights: the eye is far
+        /// more sensitive to green, and a flat average of the channels comes
+        /// out muddy.
+        func luma(_ index: Int) -> Double {
+            let p = index * 3
+            guard p + 2 < rgb.count else { return 0 }
+            return 0.299 * Double(rgb[p]) + 0.587 * Double(rgb[p + 1]) + 0.114 * Double(rgb[p + 2])
+        }
     }
 
     /// The latest frame, or nil until one arrives.
@@ -109,28 +121,26 @@ final class VisibleCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let bytesPerRow = CVPixelBufferGetBytesPerRow(pixels)
         guard let base = CVPixelBufferGetBaseAddress(pixels), width > 0, height > 0 else { return }
 
-        // A webcam is far larger than 256x192 and none of that detail is
-        // wanted: the thermal image it will be laid under has none to match.
-        // Taking every nth pixel is enough and costs almost nothing.
+        // A 4K webcam is far larger than anything this needs. Taking every
+        // nth pixel keeps it to a sensible size and costs almost nothing.
         let step = max(1, min(width / 640, height / 480))
         let outW = width / step, outH = height / step
-        var grey = [Double](repeating: 0, count: outW * outH)
+        var rgb = [UInt8](repeating: 0, count: outW * outH * 3)
 
         for y in 0..<outH {
             let row = base.advanced(by: y * step * bytesPerRow)
                 .assumingMemoryBound(to: UInt8.self)
             for x in 0..<outW {
-                let p = (x * step) * 4
-                // BGRA. The usual luma weights: the eye is far more sensitive
-                // to green, and an outline drawn from a flat average of the
-                // channels comes out muddy.
-                let b = Double(row[p]), g = Double(row[p + 1]), r = Double(row[p + 2])
-                grey[y * outW + x] = 0.114 * b + 0.587 * g + 0.299 * r
+                let p = (x * step) * 4          // BGRA from the camera
+                let out = (y * outW + x) * 3
+                rgb[out] = row[p + 2]
+                rgb[out + 1] = row[p + 1]
+                rgb[out + 2] = row[p]
             }
         }
 
         lock.lock()
-        latest = Frame(grey: grey, width: outW, height: outH)
+        latest = Frame(rgb: rgb, width: outW, height: outH)
         lock.unlock()
     }
 }
