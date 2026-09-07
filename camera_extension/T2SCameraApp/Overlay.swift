@@ -134,28 +134,99 @@ struct Overlay: Equatable {
         return (channel(0), channel(1), channel(2))
     }
 
-    // MARK: - Finding the fingertip
+    // MARK: - Finding the warm thing
 
-    /// Where the warmest small thing in the frame is, if there is one.
+    /// The middle of the warmest thing in the frame, if there is one.
     ///
-    /// A fingertip held up in front of the camera is the easiest landmark
-    /// there is on this side: skin runs well above room temperature, so the
-    /// hottest pixel is the finger. It is only reported when it genuinely
-    /// stands out, so pointing at a radiator does not silently calibrate
-    /// against the radiator.
+    /// This started as "the hottest pixel", which was useless in practice:
+    /// across a hand several hundred pixels sit within a fraction of a degree
+    /// of each other, so noise threw the answer from knuckle to fingertip and
+    /// back several times a second and there was nothing to aim at.
+    ///
+    /// So it finds the warm *thing* instead -- the run of connected pixels
+    /// near the top of the range, starting from the hottest one -- and reports
+    /// its middle. The middle of a hand does not jitter, and it is just as
+    /// good a landmark: what matters is picking the same physical point in
+    /// both pictures, not that the point be a fingertip.
+    ///
+    /// Nothing is reported unless the warm thing genuinely stands out and is
+    /// small enough to be something held up, so a radiator across the back of
+    /// the scene is not silently calibrated against.
     static func warmPoint(_ temps: [Double], width: Int, height: Int) -> (x: Int, y: Int)? {
+        guard let blob = warmBlob(temps, width: width, height: height) else { return nil }
+        return (blob.centreX, blob.centreY)
+    }
+
+    /// The warm thing itself: which pixels it covers and where its middle is.
+    struct WarmBlob {
+        var pixels: [Int]
+        var centreX: Int, centreY: Int
+    }
+
+    static func warmBlob(_ temps: [Double], width: Int, height: Int) -> WarmBlob? {
         guard temps.count == width * height, !temps.isEmpty else { return nil }
+
         var hottest = -Double.greatestFiniteMagnitude
-        var index = 0
         var total = 0.0
-        for (i, t) in temps.enumerated() {
+        for t in temps {
             total += t
-            if t > hottest { hottest = t; index = i }
+            if t > hottest { hottest = t }
         }
         let mean = total / Double(temps.count)
-        // Skin is several degrees above a room. Less than this and there is
-        // no fingertip in shot, only the scene.
+        // Skin runs several degrees above a room. Less than this and there is
+        // nothing held up, only the scene.
         guard hottest - mean > 2.5 else { return nil }
-        return (index % width, index / width)
+
+        // The threshold comes up from the scene rather than down from the
+        // peak. Measuring down from the hottest pixel sounds right and is not:
+        // the peak is itself the top of the noise, so the threshold moves
+        // frame to frame, and it sits so close to the peak that only the
+        // warmest specks qualify.
+        let threshold = max(mean + 0.45 * (hottest - mean), mean + 2.0)
+        // Bigger than this is not something held up in front of the camera;
+        // it is a wall, a window or a heater, and its middle means nothing.
+        let biggest = width * height / 6
+
+        // The largest warm region, not the one containing the hottest pixel.
+        // At a useful threshold the fingers of a hand are often islands of
+        // their own, separate from the palm, and the hottest pixel wanders
+        // between them with the noise -- so following it made the answer jump
+        // from finger to finger several times a second, which is exactly what
+        // this looked like in use. The largest region is the palm, and it
+        // stays put.
+        var seen = [Bool](repeating: false, count: temps.count)
+        var best: WarmBlob?
+        var bestSize = 0
+
+        for seed in temps.indices where !seen[seed] && temps[seed] >= threshold {
+            var queue = [seed]
+            seen[seed] = true
+            var pixels: [Int] = []
+            var sumX = 0, sumY = 0
+
+            while let index = queue.popLast() {
+                pixels.append(index)
+                sumX += index % width
+                sumY += index / width
+                let x = index % width, y = index / width
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let nx = x + dx, ny = y + dy
+                    guard nx >= 0, nx < width, ny >= 0, ny < height else { continue }
+                    let next = ny * width + nx
+                    guard !seen[next], temps[next] >= threshold else { continue }
+                    seen[next] = true
+                    queue.append(next)
+                }
+            }
+            if pixels.count > bestSize {
+                bestSize = pixels.count
+                best = WarmBlob(pixels: pixels,
+                                centreX: sumX / pixels.count, centreY: sumY / pixels.count)
+            }
+        }
+
+        // A handful of pixels is noise; a third of the picture is furniture.
+        guard let best, bestSize >= 12, bestSize <= biggest else { return nil }
+        return best
     }
 }

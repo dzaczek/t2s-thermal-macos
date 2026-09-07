@@ -53,6 +53,12 @@ final class OverlayCalibrationWindow: NSWindowController {
     /// thermal picture, or failing that the fingertip found in it.
     private var chosenThermal: CGPoint?
     private var detectedWarm: CGPoint?
+    /// The last few detections, averaged. A hand wobbles and so does anything
+    /// measured off it; without this the marker twitches and there is nothing
+    /// to aim at.
+    private var recentWarm: [CGPoint] = []
+    /// True once those agree closely enough to be worth clicking on.
+    private var warmIsSteady = false
 
     /// Where to put each point. Spread out on purpose: four points bunched
     /// together pin the mapping down badly, and the corners are where the two
@@ -117,8 +123,8 @@ final class OverlayCalibrationWindow: NSWindowController {
         content.addSubview(undoButton)
 
         let hint = NSTextField(labelWithString:
-            "Click the same thing in both pictures. A fingertip is found for you on the left; "
-            + "click there yourself to use something else.")
+            "Anything warm held up is found for you on the left, marked green once it holds "
+            + "still. Click the left picture yourself to use something else.")
         hint.frame = NSRect(x: 178, y: 24, width: 630, height: 18)
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
@@ -152,23 +158,47 @@ final class OverlayCalibrationWindow: NSWindowController {
         }
         thermalView.show(VisibleCapture.Frame(rgb: thermal.rgb,
                                               width: thermal.width, height: thermal.height))
-        detectedWarm = thermal.warm.map { CGPoint(x: $0.x, y: $0.y) }
+        settle(on: thermal.warm.map { CGPoint(x: $0.x, y: $0.y) })
         // A point you picked yourself stays put; otherwise the marker follows
         // whatever is warmest.
         thermalView.highlight = chosenThermal ?? detectedWarm
         thermalView.highlightIsChosen = chosenThermal != nil
+        thermalView.highlightIsSteady = chosenThermal != nil || warmIsSteady
         updateStatus()
+    }
+
+    /// Averages the last few detections and says whether they have settled.
+    private func settle(on point: CGPoint?) {
+        guard let point else {
+            recentWarm.removeAll()
+            detectedWarm = nil
+            warmIsSteady = false
+            return
+        }
+        recentWarm.append(point)
+        if recentWarm.count > 6 { recentWarm.removeFirst() }
+
+        let mean = CGPoint(x: recentWarm.map(\.x).reduce(0, +) / CGFloat(recentWarm.count),
+                           y: recentWarm.map(\.y).reduce(0, +) / CGFloat(recentWarm.count))
+        detectedWarm = mean
+        // Steady means every recent reading is within a few pixels of the
+        // average, which is what holding still actually looks like.
+        warmIsSteady = recentWarm.count >= 4 && recentWarm.allSatisfy {
+            abs($0.x - mean.x) < 4 && abs($0.y - mean.y) < 4
+        }
     }
 
     private func updateStatus() {
         if chosenThermal != nil {
-            statusLabel.stringValue = "Thermal point set. Now click the same thing on the right."
+            statusLabel.stringValue = "Left point set. Now click the same thing on the right."
         } else if detectedWarm != nil {
-            statusLabel.stringValue = "Fingertip found on the left. Click the same fingertip on "
-                + "the right, or click the left picture to pick a different point."
+            statusLabel.stringValue = warmIsSteady
+                ? "Something warm found and holding still, marked on the left. Click the same "
+                  + "spot on the right."
+                : "Something warm found on the left but still moving \u{2014} hold your hand "
+                  + "still, or just click the point you want on the left."
         } else {
-            statusLabel.stringValue = "Click a point on the left, then the same one on the right. "
-                + "A fingertip would be found for you."
+            statusLabel.stringValue = "Click a point on the left, then the same one on the right."
         }
     }
 
@@ -178,8 +208,12 @@ final class OverlayCalibrationWindow: NSWindowController {
             promptLabel.stringValue = "Done."
             return
         }
-        promptLabel.stringValue = "Point \(index + 1) of 4 \u{2014} somewhere towards the "
-            + "\(OverlayCalibrationWindow.places[index]) of the scene."
+        promptLabel.stringValue = "Point \(index + 1) of 4 \u{2014} pick something you can make "
+            + "out in both pictures, somewhere towards the "
+            + "\(OverlayCalibrationWindow.places[index]) of the scene. Click it on the left, "
+            + "then the same thing on the right."
+        thermalView.pointNumber = index + 1
+        visibleView.pointNumber = index + 1
         undoButton.isEnabled = index > 0
     }
 
@@ -267,6 +301,11 @@ private final class CalibrationImageView: NSView {
     var highlight: CGPoint? { didSet { needsDisplay = true } }
     /// Drawn differently once a person has picked it rather than the app.
     var highlightIsChosen = false { didSet { needsDisplay = true } }
+    /// Whether the highlight has settled enough to aim at.
+    var highlightIsSteady = false { didSet { needsDisplay = true } }
+    /// Which point is being taken, drawn on the picture so it is where the
+    /// eye already is rather than in a label somewhere else.
+    var pointNumber: Int? { didSet { needsDisplay = true } }
 
     private var rotation = ImageRotation.none
     private var image: CGImage?
@@ -340,28 +379,53 @@ private final class CalibrationImageView: NSView {
         ctx.draw(image, in: pictureRect)
 
         if let highlight, let p = viewPoint(highlight) {
-            ctx.setStrokeColor((highlightIsChosen ? NSColor.systemBlue : NSColor.systemGreen).cgColor)
-            ctx.setLineWidth(2)
-            ctx.strokeEllipse(in: CGRect(x: p.x - 13, y: p.y - 13, width: 26, height: 26))
-            for (dx, dy) in [(-20.0, 0.0), (6.0, 0.0)] {
-                ctx.move(to: CGPoint(x: p.x + dx, y: p.y + dy))
-                ctx.addLine(to: CGPoint(x: p.x + dx + 14, y: p.y + dy))
+            let colour: NSColor = highlightIsChosen ? .systemBlue
+                : (highlightIsSteady ? .systemGreen : .systemOrange)
+            // A dark halo under everything: a thin coloured line vanishes on a
+            // picture that is itself bright and busy.
+            for (width, stroke) in [(5.0, NSColor.black.withAlphaComponent(0.8)), (2.5, colour)] {
+                ctx.setStrokeColor(stroke.cgColor)
+                ctx.setLineWidth(width)
+                ctx.strokeEllipse(in: CGRect(x: p.x - 14, y: p.y - 14, width: 28, height: 28))
+                for (dx, dy) in [(-24.0, 0.0), (8.0, 0.0)] {
+                    ctx.move(to: CGPoint(x: p.x + dx, y: p.y + dy))
+                    ctx.addLine(to: CGPoint(x: p.x + dx + 16, y: p.y + dy))
+                }
+                for (dx, dy) in [(0.0, -24.0), (0.0, 8.0)] {
+                    ctx.move(to: CGPoint(x: p.x + dx, y: p.y + dy))
+                    ctx.addLine(to: CGPoint(x: p.x + dx, y: p.y + dy + 16))
+                }
+                ctx.strokePath()
             }
-            for (dx, dy) in [(0.0, -20.0), (0.0, 6.0)] {
-                ctx.move(to: CGPoint(x: p.x + dx, y: p.y + dy))
-                ctx.addLine(to: CGPoint(x: p.x + dx, y: p.y + dy + 14))
-            }
-            ctx.strokePath()
         }
 
         for (i, mark) in marks.enumerated() {
             guard let p = viewPoint(mark) else { continue }
-            ctx.setStrokeColor(NSColor.systemYellow.cgColor)
-            ctx.setLineWidth(2)
-            ctx.strokeEllipse(in: CGRect(x: p.x - 8, y: p.y - 8, width: 16, height: 16))
-            (String(i + 1) as NSString).draw(at: CGPoint(x: p.x + 10, y: p.y - 7), withAttributes: [
-                .font: NSFont.boldSystemFont(ofSize: 12),
-                .foregroundColor: NSColor.systemYellow])
+            // A filled badge rather than an outline and a loose number: the
+            // points taken have to be findable at a glance on a busy picture.
+            ctx.setFillColor(NSColor.black.withAlphaComponent(0.75).cgColor)
+            ctx.fillEllipse(in: CGRect(x: p.x - 12, y: p.y - 12, width: 24, height: 24))
+            ctx.setFillColor(NSColor.systemYellow.cgColor)
+            ctx.fillEllipse(in: CGRect(x: p.x - 10, y: p.y - 10, width: 20, height: 20))
+            let number = String(i + 1) as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: 13),
+                .foregroundColor: NSColor.black]
+            let size = number.size(withAttributes: attributes)
+            number.draw(at: CGPoint(x: p.x - size.width / 2, y: p.y - size.height / 2),
+                        withAttributes: attributes)
+        }
+
+        if let pointNumber {
+            let text = "Point \(pointNumber) of 4" as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: 15),
+                .foregroundColor: NSColor.white]
+            let size = text.size(withAttributes: attributes)
+            let box = CGRect(x: 10, y: 10, width: size.width + 16, height: size.height + 8)
+            ctx.setFillColor(NSColor.black.withAlphaComponent(0.65).cgColor)
+            ctx.fill(box)
+            text.draw(at: CGPoint(x: box.minX + 8, y: box.minY + 4), withAttributes: attributes)
         }
     }
 
