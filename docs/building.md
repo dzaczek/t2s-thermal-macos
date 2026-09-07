@@ -9,15 +9,19 @@ Requires Xcode, [xcodegen](https://github.com/yonaskolb/XcodeGen)
 extension cannot be loaded unsigned.
 
 ```bash
-cd camera_extension
 ./build.sh            # build, sign, install to /Applications
 ./build.sh --run      # ... and launch
 ```
 
+Run it from the repository root, where you land after a clone. The script that
+does the work is `camera_extension/build.sh`, next to the Xcode project it
+generates; the one at the root forwards to it, so either works and both take
+the same arguments.
+
 `build.sh` finds Xcode via `xcode-select -p` and the signing team from your
 keychain, so there is nothing to edit. If either guess is wrong, copy
-`build.config.example` to `build.config` and set `T2S_DEVELOPER_DIR` /
-`T2S_TEAM_ID`; that file is git-ignored.
+`camera_extension/build.config.example` to `camera_extension/build.config` and
+set `T2S_DEVELOPER_DIR` / `T2S_TEAM_ID`; that file is git-ignored.
 
 Nothing in the source hard-codes a team identifier: the entitlements use
 Xcode's `$(TeamIdentifierPrefix)`, and the App Group name is read back at
