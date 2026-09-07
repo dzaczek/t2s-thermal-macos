@@ -5,36 +5,59 @@ import Cocoa
 /// The two pictures have nothing obviously in common: one shows where the
 /// heat is, the other where the light is, and an edge that is sharp in one is
 /// routinely invisible in the other. Matching them automatically on their own
-/// content is therefore unreliable in exactly the cases that matter.
+/// content is unreliable in exactly the cases that matter.
 ///
-/// A fingertip is visible to both, and that is the way through. Hold one up
-/// and the thermal side finds it on its own -- skin is well above room
-/// temperature, so it is simply the hottest thing in shot -- while you click
-/// the same fingertip in the webcam picture here. Four points at four
-/// well-spread places and the mapping is pinned down.
+/// So a person does the matching. Both pictures are shown side by side and
+/// you click the same thing in each: a corner, a screw head, a fingertip,
+/// whatever you can make out in both. Four points and the mapping is pinned
+/// down.
+///
+/// A fingertip is offered as a shortcut, because it is the one landmark the
+/// thermal camera can find on its own -- skin runs well above room
+/// temperature, so it is simply the hottest thing in shot. When one is in
+/// view it is marked, and clicking only the webcam side uses it. Clicking the
+/// thermal picture yourself overrides that, which is what you want as soon as
+/// the scene has anything else hot in it.
+///
+/// Either picture can be turned. The mapping could express a right angle on
+/// its own, but clicking accurately on a picture lying on its side is another
+/// matter, and the two cameras are often clamped together that way.
 final class OverlayCalibrationWindow: NSWindowController {
 
-    /// Asked for the live thermal frame at the moment of a click, and told
-    /// when four pairs have been gathered.
-    var warmPointProvider: (() -> (x: Int, y: Int)?)?
+    /// What the thermal side has to say right now. Everything is in the
+    /// sensor's own coordinates, unturned; the views do their own turning.
+    struct ThermalPreview {
+        var grey: [Double]
+        var width: Int, height: Int
+        /// The warmest thing in shot, when something is warm enough to be a
+        /// finger.
+        var warm: (x: Int, y: Int)?
+    }
+
+    var thermalProvider: (() -> ThermalPreview?)?
     var visibleFrameProvider: (() -> VisibleCapture.Frame?)?
     var onFinished: ((Homography) -> Void)?
 
-    private let imageView = CalibrationImageView()
+    private let thermalView = CalibrationImageView()
+    private let visibleView = CalibrationImageView()
     private let promptLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
     private var undoButton = NSButton()
     private var timer: Timer?
 
     private var pairs: [(from: CGPoint, to: CGPoint)] = []
+    /// The thermal half of the point being taken: whatever was clicked on the
+    /// thermal picture, or failing that the fingertip found in it.
+    private var chosenThermal: CGPoint?
+    private var detectedWarm: CGPoint?
 
-    /// Where to hold the finger for each point. Spread out on purpose: four
-    /// points bunched together pin the mapping down badly, and the corners of
-    /// the view are where the two cameras disagree most.
+    /// Where to put each point. Spread out on purpose: four points bunched
+    /// together pin the mapping down badly, and the corners are where the two
+    /// cameras disagree most.
     private static let places = ["top left", "top right", "bottom right", "bottom left"]
 
     convenience init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 620),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 940, height: 560),
                               styleMask: [.titled, .closable],
                               backing: .buffered, defer: false)
         window.title = "Line Up the Webcam"
@@ -45,27 +68,61 @@ final class OverlayCalibrationWindow: NSWindowController {
     private func build() {
         guard let window, let content = window.contentView else { return }
 
-        promptLabel.frame = NSRect(x: 16, y: 570, width: 688, height: 36)
+        promptLabel.frame = NSRect(x: 16, y: 508, width: 908, height: 40)
         promptLabel.font = .systemFont(ofSize: 13, weight: .medium)
         promptLabel.maximumNumberOfLines = 2
         promptLabel.lineBreakMode = .byWordWrapping
         content.addSubview(promptLabel)
 
-        imageView.frame = NSRect(x: 16, y: 70, width: 688, height: 492)
-        imageView.onClick = { [weak self] point in self?.record(visiblePoint: point) }
-        content.addSubview(imageView)
+        func caption(_ text: String, x: CGFloat) -> NSTextField {
+            let label = NSTextField(labelWithString: text)
+            label.frame = NSRect(x: x, y: 486, width: 446, height: 18)
+            label.font = .systemFont(ofSize: 11, weight: .semibold)
+            label.textColor = .secondaryLabelColor
+            return label
+        }
+        content.addSubview(caption("Thermal camera", x: 16))
+        content.addSubview(caption("Webcam", x: 478))
 
-        statusLabel.frame = NSRect(x: 16, y: 44, width: 688, height: 20)
+        thermalView.frame = NSRect(x: 16, y: 128, width: 446, height: 352)
+        thermalView.onClick = { [weak self] point in self?.chooseThermal(point) }
+        content.addSubview(thermalView)
+
+        visibleView.frame = NSRect(x: 478, y: 128, width: 446, height: 352)
+        visibleView.onClick = { [weak self] point in self?.completePoint(visible: point) }
+        content.addSubview(visibleView)
+
+        func turnControl(x: CGFloat, action: Selector) -> NSSegmentedControl {
+            let control = NSSegmentedControl(labels: ["\u{21BA}", "\u{21BB}"],
+                                             trackingMode: .momentary,
+                                             target: self, action: action)
+            control.frame = NSRect(x: x, y: 96, width: 90, height: 24)
+            return control
+        }
+        content.addSubview(turnControl(x: 16, action: #selector(turnThermal(_:))))
+        content.addSubview(turnControl(x: 478, action: #selector(turnVisible(_:))))
+
+        statusLabel.frame = NSRect(x: 120, y: 94, width: 340, height: 28)
         statusLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         statusLabel.textColor = .secondaryLabelColor
+        statusLabel.maximumNumberOfLines = 2
+        statusLabel.lineBreakMode = .byWordWrapping
         content.addSubview(statusLabel)
 
         undoButton = NSButton(title: "Undo Last Point", target: self, action: #selector(undo(_:)))
-        undoButton.frame = NSRect(x: 16, y: 10, width: 150, height: 26)
+        undoButton.frame = NSRect(x: 16, y: 20, width: 150, height: 26)
         content.addSubview(undoButton)
 
+        let hint = NSTextField(labelWithString:
+            "Click the same thing in both pictures. A fingertip is found for you on the left; "
+            + "click there yourself to use something else.")
+        hint.frame = NSRect(x: 178, y: 24, width: 630, height: 18)
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = .tertiaryLabelColor
+        content.addSubview(hint)
+
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel(_:)))
-        cancel.frame = NSRect(x: 600, y: 10, width: 104, height: 26)
+        cancel.frame = NSRect(x: 820, y: 20, width: 104, height: 26)
         content.addSubview(cancel)
 
         window.center()
@@ -74,76 +131,117 @@ final class OverlayCalibrationWindow: NSWindowController {
 
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
-        pairs.removeAll()
-        updatePrompt()
-        // The webcam picture has to be live, or you would be clicking on a
-        // still of where your finger used to be.
+        reset(message: nil)
+        // Both pictures have to be live, or you would be clicking on a still
+        // of where your finger used to be.
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 15, repeats: true) { [weak self] _ in
             self?.refresh()
         }
     }
 
     private func refresh() {
-        imageView.show(visibleFrameProvider?())
-        let warm = warmPointProvider?()
-        imageView.hasWarmPoint = warm != nil
-        statusLabel.stringValue = warm.map {
-            "Thermal camera: warmest point at \($0.x), \($0.y) \u{2014} that is what will be paired "
-                + "with your click."
-        } ?? "Thermal camera: nothing warm enough in shot. Hold a fingertip up in front of it."
+        visibleView.show(visibleFrameProvider?())
+
+        guard let thermal = thermalProvider?() else {
+            detectedWarm = nil
+            thermalView.show(nil)
+            return
+        }
+        thermalView.show(VisibleCapture.Frame(grey: thermal.grey,
+                                              width: thermal.width, height: thermal.height))
+        detectedWarm = thermal.warm.map { CGPoint(x: $0.x, y: $0.y) }
+        // A point you picked yourself stays put; otherwise the marker follows
+        // whatever is warmest.
+        thermalView.highlight = chosenThermal ?? detectedWarm
+        thermalView.highlightIsChosen = chosenThermal != nil
+        updateStatus()
+    }
+
+    private func updateStatus() {
+        if chosenThermal != nil {
+            statusLabel.stringValue = "Thermal point set. Now click the same thing on the right."
+        } else if detectedWarm != nil {
+            statusLabel.stringValue = "Fingertip found on the left. Click the same fingertip on "
+                + "the right, or click the left picture to pick a different point."
+        } else {
+            statusLabel.stringValue = "Click a point on the left, then the same one on the right. "
+                + "A fingertip would be found for you."
+        }
     }
 
     private func updatePrompt() {
         let index = pairs.count
-        if index >= OverlayCalibrationWindow.places.count {
+        guard index < OverlayCalibrationWindow.places.count else {
             promptLabel.stringValue = "Done."
             return
         }
-        promptLabel.stringValue = "Point \(index + 1) of 4. Hold a fingertip towards the "
-            + "\(OverlayCalibrationWindow.places[index]) of the scene, where both cameras can see "
-            + "it, then click that fingertip in the picture below."
+        promptLabel.stringValue = "Point \(index + 1) of 4 \u{2014} somewhere towards the "
+            + "\(OverlayCalibrationWindow.places[index]) of the scene."
         undoButton.isEnabled = index > 0
     }
 
-    private func record(visiblePoint: CGPoint) {
+    private func chooseThermal(_ point: CGPoint) {
+        chosenThermal = point
+        updateStatus()
+    }
+
+    private func completePoint(visible: CGPoint) {
         guard pairs.count < OverlayCalibrationWindow.places.count else { return }
-        guard let warm = warmPointProvider?() else {
-            statusLabel.stringValue = "Nothing warm enough in the thermal camera yet \u{2014} "
-                + "hold a fingertip up before clicking."
+        guard let thermal = chosenThermal ?? detectedWarm else {
+            statusLabel.stringValue = "Nothing chosen on the left yet. Click the point there "
+                + "first, or hold a fingertip up so it can be found."
             NSSound.beep()
             return
         }
-        pairs.append((from: CGPoint(x: warm.x, y: warm.y), to: visiblePoint))
-        imageView.marks.append(visiblePoint)
+
+        pairs.append((from: thermal, to: visible))
+        thermalView.marks.append(thermal)
+        visibleView.marks.append(visible)
+        chosenThermal = nil
         updatePrompt()
 
         guard pairs.count == OverlayCalibrationWindow.places.count else { return }
         guard let homography = Homography.solve(pairs) else {
-            // Four points that cannot pin a mapping down: bunched together,
-            // or three in a line. Better to say so and start again than to
-            // save something that will put the pictures in the wrong place.
-            statusLabel.stringValue = "Those four points do not pin the mapping down \u{2014} "
-                + "they are too close together or three are in a line. Starting again."
+            // Four points that cannot pin a mapping down: bunched together, or
+            // three in a line. Better to say so and start again than to save
+            // something that puts the pictures in the wrong place.
+            reset(message: "Those four points do not pin the mapping down \u{2014} they are too "
+                  + "close together, or three are in a line. Starting again; spread them into "
+                  + "the corners.")
             NSSound.beep()
-            pairs.removeAll()
-            imageView.marks.removeAll()
-            updatePrompt()
             return
         }
         onFinished?(homography)
         close()
     }
 
+    private func reset(message: String?) {
+        pairs.removeAll()
+        chosenThermal = nil
+        thermalView.marks.removeAll()
+        visibleView.marks.removeAll()
+        updatePrompt()
+        if let message { statusLabel.stringValue = message }
+    }
+
+    @objc private func turnThermal(_ sender: NSSegmentedControl) {
+        thermalView.turn(clockwise: sender.selectedSegment == 1)
+    }
+
+    @objc private func turnVisible(_ sender: NSSegmentedControl) {
+        visibleView.turn(clockwise: sender.selectedSegment == 1)
+    }
+
     @objc private func undo(_ sender: Any?) {
         guard !pairs.isEmpty else { return }
         pairs.removeLast()
-        if !imageView.marks.isEmpty { imageView.marks.removeLast() }
+        if !visibleView.marks.isEmpty { visibleView.marks.removeLast() }
+        if !thermalView.marks.isEmpty { thermalView.marks.removeLast() }
+        chosenThermal = nil
         updatePrompt()
     }
 
-    @objc private func cancel(_ sender: Any?) {
-        close()
-    }
+    @objc private func cancel(_ sender: Any?) { close() }
 
     override func close() {
         timer?.invalidate()
@@ -152,30 +250,53 @@ final class OverlayCalibrationWindow: NSWindowController {
     }
 }
 
-/// The webcam picture, with the points already taken marked on it.
+/// A grey picture with marks on it.
+///
+/// It can be turned for viewing, and that is all the turning does: everything
+/// it is given and everything it reports is in the camera's own coordinates,
+/// so which way round it happens to be shown cannot leak into a calibration.
 private final class CalibrationImageView: NSView {
 
     var onClick: ((CGPoint) -> Void)?
+    /// Points already taken, in camera coordinates.
     var marks: [CGPoint] = [] { didSet { needsDisplay = true } }
-    var hasWarmPoint = false { didSet { needsDisplay = true } }
+    /// The point being considered, in camera coordinates.
+    var highlight: CGPoint? { didSet { needsDisplay = true } }
+    /// Drawn differently once a person has picked it rather than the app.
+    var highlightIsChosen = false { didSet { needsDisplay = true } }
 
+    private var rotation = ImageRotation.none
     private var image: CGImage?
-    private var frameSize = CGSize.zero
+    /// The camera's own size, and the size as shown after any turn.
+    private var cameraSize = CGSize.zero
+    private var shownSize = CGSize.zero
 
     override var isFlipped: Bool { true }
 
-    func show(_ frame: VisibleCapture.Frame?) {
-        guard let frame else { image = nil; needsDisplay = true; return }
-        frameSize = CGSize(width: frame.width, height: frame.height)
+    func turn(clockwise: Bool) {
+        rotation = clockwise ? rotation.turnedRight() : rotation.turnedLeft()
+        needsDisplay = true
+    }
 
-        var pixels = [UInt8](repeating: 255, count: frame.width * frame.height * 4)
-        for i in 0..<(frame.width * frame.height) {
-            let v = UInt8(max(0, min(255, frame.grey[i])))
+    func show(_ frame: VisibleCapture.Frame?) {
+        guard let frame, frame.grey.count == frame.width * frame.height else {
+            image = nil
+            needsDisplay = true
+            return
+        }
+        cameraSize = CGSize(width: frame.width, height: frame.height)
+        let grey = rotation.apply(frame.grey, width: frame.width, height: frame.height)
+        let size = rotation.size(width: frame.width, height: frame.height)
+        shownSize = CGSize(width: size.width, height: size.height)
+
+        var pixels = [UInt8](repeating: 255, count: size.width * size.height * 4)
+        for i in 0..<(size.width * size.height) {
+            let v = UInt8(max(0, min(255, grey[i])))
             pixels[i * 4 + 0] = v; pixels[i * 4 + 1] = v; pixels[i * 4 + 2] = v
         }
         if let provider = CGDataProvider(data: Data(pixels) as CFData) {
-            image = CGImage(width: frame.width, height: frame.height, bitsPerComponent: 8,
-                            bitsPerPixel: 32, bytesPerRow: frame.width * 4,
+            image = CGImage(width: size.width, height: size.height, bitsPerComponent: 8,
+                            bitsPerPixel: 32, bytesPerRow: size.width * 4,
                             space: CGColorSpaceCreateDeviceRGB(),
                             bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
                             provider: provider, decode: nil,
@@ -184,11 +305,11 @@ private final class CalibrationImageView: NSView {
         needsDisplay = true
     }
 
-    /// Where the picture actually sits: aspect-fit, so a click can be turned
-    /// back into a webcam pixel without guessing.
+    /// Where the picture sits: aspect-fit, so a click maps back to a pixel
+    /// without guesswork.
     private var pictureRect: CGRect {
-        guard frameSize.width > 0, frameSize.height > 0 else { return bounds }
-        let aspect = frameSize.width / frameSize.height
+        guard shownSize.width > 0, shownSize.height > 0 else { return bounds }
+        let aspect = shownSize.width / shownSize.height
         var size = CGSize(width: bounds.width, height: bounds.width / aspect)
         if size.height > bounds.height {
             size = CGSize(width: bounds.height * aspect, height: bounds.height)
@@ -204,44 +325,60 @@ private final class CalibrationImageView: NSView {
         ctx.fill(bounds)
 
         guard let image else {
-            let text = "No picture from the webcam yet."
-            (text as NSString).draw(at: CGPoint(x: 16, y: 16), withAttributes: [
-                .font: NSFont.systemFont(ofSize: 12),
-                .foregroundColor: NSColor.secondaryLabelColor])
+            ("Waiting for a picture\u{2026}" as NSString).draw(
+                at: CGPoint(x: 12, y: 12),
+                withAttributes: [.font: NSFont.systemFont(ofSize: 12),
+                                 .foregroundColor: NSColor.secondaryLabelColor])
             return
         }
         ctx.interpolationQuality = .high
         ctx.draw(image, in: pictureRect)
 
-        for (i, mark) in marks.enumerated() {
-            let p = viewPoint(mark)
-            ctx.setStrokeColor(NSColor.systemGreen.cgColor)
+        if let highlight, let p = viewPoint(highlight) {
+            ctx.setStrokeColor((highlightIsChosen ? NSColor.systemBlue : NSColor.systemGreen).cgColor)
             ctx.setLineWidth(2)
-            ctx.strokeEllipse(in: CGRect(x: p.x - 9, y: p.y - 9, width: 18, height: 18))
-            (String(i + 1) as NSString).draw(at: CGPoint(x: p.x + 11, y: p.y - 7), withAttributes: [
-                .font: NSFont.boldSystemFont(ofSize: 12),
-                .foregroundColor: NSColor.systemGreen])
+            ctx.strokeEllipse(in: CGRect(x: p.x - 13, y: p.y - 13, width: 26, height: 26))
+            for (dx, dy) in [(-20.0, 0.0), (6.0, 0.0)] {
+                ctx.move(to: CGPoint(x: p.x + dx, y: p.y + dy))
+                ctx.addLine(to: CGPoint(x: p.x + dx + 14, y: p.y + dy))
+            }
+            for (dx, dy) in [(0.0, -20.0), (0.0, 6.0)] {
+                ctx.move(to: CGPoint(x: p.x + dx, y: p.y + dy))
+                ctx.addLine(to: CGPoint(x: p.x + dx, y: p.y + dy + 14))
+            }
+            ctx.strokePath()
         }
 
-        // A quiet reminder of whether the other camera is ready, right where
-        // the eye already is.
-        let note = hasWarmPoint ? "thermal: fingertip found" : "thermal: no fingertip"
-        (note as NSString).draw(at: CGPoint(x: 8, y: 8), withAttributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
-            .foregroundColor: hasWarmPoint ? NSColor.systemGreen : NSColor.systemOrange])
+        for (i, mark) in marks.enumerated() {
+            guard let p = viewPoint(mark) else { continue }
+            ctx.setStrokeColor(NSColor.systemYellow.cgColor)
+            ctx.setLineWidth(2)
+            ctx.strokeEllipse(in: CGRect(x: p.x - 8, y: p.y - 8, width: 16, height: 16))
+            (String(i + 1) as NSString).draw(at: CGPoint(x: p.x + 10, y: p.y - 7), withAttributes: [
+                .font: NSFont.boldSystemFont(ofSize: 12),
+                .foregroundColor: NSColor.systemYellow])
+        }
     }
 
-    private func viewPoint(_ framePoint: CGPoint) -> CGPoint {
+    /// Camera coordinates to somewhere on screen, through whatever turn is in
+    /// effect.
+    private func viewPoint(_ cameraPoint: CGPoint) -> CGPoint? {
+        guard cameraSize.width > 0, shownSize.width > 0 else { return nil }
+        let turned = rotation.map(x: Int(cameraPoint.x), y: Int(cameraPoint.y),
+                                  width: Int(cameraSize.width), height: Int(cameraSize.height))
         let r = pictureRect
-        return CGPoint(x: r.minX + framePoint.x / frameSize.width * r.width,
-                       y: r.minY + framePoint.y / frameSize.height * r.height)
+        return CGPoint(x: r.minX + (Double(turned.x) + 0.5) / shownSize.width * r.width,
+                       y: r.minY + (Double(turned.y) + 0.5) / shownSize.height * r.height)
     }
 
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
         let r = pictureRect
-        guard r.contains(p), frameSize.width > 0 else { return }
-        onClick?(CGPoint(x: (p.x - r.minX) / r.width * frameSize.width,
-                         y: (p.y - r.minY) / r.height * frameSize.height))
+        guard r.contains(p), shownSize.width > 0 else { return }
+        let shown = CGPoint(x: (p.x - r.minX) / r.width * shownSize.width,
+                            y: (p.y - r.minY) / r.height * shownSize.height)
+        let back = rotation.inverse.map(x: Int(shown.x), y: Int(shown.y),
+                                        width: Int(shownSize.width), height: Int(shownSize.height))
+        onClick?(CGPoint(x: back.x, y: back.y))
     }
 }

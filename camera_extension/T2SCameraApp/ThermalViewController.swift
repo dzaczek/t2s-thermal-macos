@@ -1103,15 +1103,20 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         let window = overlayWindow ?? OverlayCalibrationWindow()
         overlayWindow = window
         window.visibleFrameProvider = { [weak self] in self?.visible.currentFrame() }
-        // The pairing is made in sensor coordinates, before any rotation, so
-        // turning the picture afterwards cannot invalidate the calibration.
-        window.warmPointProvider = { [weak self] in
+        // Everything the window gets is in sensor coordinates, before any
+        // rotation: it does its own turning for viewing, and a calibration
+        // built that way survives the picture being turned afterwards.
+        window.thermalProvider = { [weak self] in
             guard let self else { return nil }
             self.frameLock.lock()
             let temps = self.lastSensorTemps
             self.frameLock.unlock()
-            return Overlay.warmPoint(temps, width: ThermalCapture.width,
-                                     height: ThermalCapture.imageHeight)
+            let w = ThermalCapture.width, h = ThermalCapture.imageHeight
+            guard temps.count == w * h else { return nil }
+            return OverlayCalibrationWindow.ThermalPreview(
+                grey: ThermalProcessor.normalize(temps).map(Double.init),
+                width: w, height: h,
+                warm: Overlay.warmPoint(temps, width: w, height: h))
         }
         window.onFinished = { [weak self] homography in
             guard let self else { return }

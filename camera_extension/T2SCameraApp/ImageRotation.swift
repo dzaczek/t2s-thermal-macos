@@ -14,6 +14,10 @@ enum ImageRotation: Int, CaseIterable {
     func turnedLeft() -> ImageRotation { ImageRotation(rawValue: (rawValue + 3) % 4)! }
     func turnedRight() -> ImageRotation { ImageRotation(rawValue: (rawValue + 1) % 4)! }
 
+    /// The turn that undoes this one, for mapping a point on a turned picture
+    /// back to where it came from.
+    var inverse: ImageRotation { ImageRotation(rawValue: (4 - rawValue) % 4)! }
+
     /// A quarter turn puts the image on its side, so the axes swap.
     var swapsAxes: Bool { rawValue % 2 == 1 }
 
