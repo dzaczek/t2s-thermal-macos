@@ -24,6 +24,12 @@ final class ThermalImageView: NSView {
     /// Resolved at mouse-down, since the modifier can be released mid-drag.
     private var dragIsLine = false
 
+    /// Size of the frame as it is rendered, which is the sensor turned by
+    /// whatever rotation is set. Clicks are mapped through this, so a rotated
+    /// image still drops markers where the pointer is.
+    var sensorWidth = ThermalCapture.width
+    var sensorHeight = ThermalCapture.imageHeight
+
     override var isFlipped: Bool { false }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -62,13 +68,19 @@ final class ThermalImageView: NSView {
                       width: size.width, height: size.height)
     }
 
-    /// The rendered frame is the thermal image plus the scale bar on the
-    /// right, so only the left part maps to sensor pixels.
+    /// Where the picture itself is, inside the view. The rendered frame also
+    /// carries the scale bar, and a turned image is letterboxed within its
+    /// share of it -- both are asked for rather than assumed, so a click lands
+    /// on the pixel under the pointer at any rotation.
     private var thermalRect: CGRect {
         let r = imageRect
-        let fraction = CGFloat(ThermalCapture.width * ThermalRenderer.scale)
-            / CGFloat(ThermalRenderer.outputWidth)
-        return CGRect(x: r.minX, y: r.minY, width: r.width * fraction, height: r.height)
+        let place = ThermalRenderer.layout(imgW: sensorWidth, imgH: sensorHeight)
+        let sx = r.width / CGFloat(ThermalRenderer.outputWidth)
+        let sy = r.height / CGFloat(ThermalRenderer.outputHeight)
+        return CGRect(x: r.minX + place.rect.minX * sx,
+                      y: r.minY + place.rect.minY * sy,
+                      width: place.rect.width * sx,
+                      height: place.rect.height * sy)
     }
 
     /// View point -> sensor pixel, or nil outside the thermal image (over the
@@ -79,10 +91,9 @@ final class ThermalImageView: NSView {
         let fx = (p.x - r.minX) / r.width
         // View is bottom-up, sensor rows are top-down.
         let fy = 1.0 - ((p.y - r.minY) / r.height)
-        let x = Int(fx * CGFloat(ThermalCapture.width))
-        let y = Int(fy * CGFloat(ThermalCapture.imageHeight))
-        guard x >= 0, x < ThermalCapture.width,
-              y >= 0, y < ThermalCapture.imageHeight else { return nil }
+        let x = Int(fx * CGFloat(sensorWidth))
+        let y = Int(fy * CGFloat(sensorHeight))
+        guard x >= 0, x < sensorWidth, y >= 0, y < sensorHeight else { return nil }
         return (x, y)
     }
 

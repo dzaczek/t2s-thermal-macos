@@ -56,6 +56,51 @@ image spells out what the current setting does.
   next to painted steel). Blank means "use the camera-wide value". The override
   is applied host-side; the camera keeps its own setting.
 
+## Tracking an object
+
+A measurement normally covers a fixed set of pixels, which is fine for a wall
+and useless for a hand. Select the object in the list and press **Track** (in
+the side panel, in the toolbar, or **⌘T**) and it becomes sticky: it follows
+whatever it was placed on.
+
+There is no motion data in a thermal frame, so this works by remembering the
+shape of the heat under the object and looking for it again nearby in each new
+frame. Both the remembered patch and the frame have their own average removed
+before they are compared, so a room that warms up, a range change or a NUC
+shifts everything together without breaking the match.
+
+- A tracked object is drawn **green** and marked `◎` in the list.
+- If it loses what it was following, it turns **amber**, goes dashed and says
+  `track lost`. It stays where it last saw the object rather than sliding onto
+  whatever looks least wrong. It picks the object up again by itself if it
+  comes back to roughly the same place.
+- Tracking something with no contrast is refused rather than done badly. A
+  blank patch of wall has nothing to lock onto, and the app says so instead of
+  letting the marker wander.
+- A spot is only 3x3, far too small to match on, so the patch that gets
+  remembered is bigger than the object carrying it — about 15x15 pixels.
+
+**View ▸ Stop Tracking Everything** pins everything back down.
+
+## Rotating the image
+
+Three buttons in the toolbar: **↺**, **Reset**, **↻**. Or **⌘[**, **⌘]** and
+**⌘\\**. Each turn is 90°, and Reset goes back to the camera's own orientation.
+
+The turn is applied to the temperatures before anything is measured or drawn,
+which is why the labels stay upright, clicks land where you point, and your
+measurement objects rotate with the picture and stay on what they were
+measuring. On its side the image is portrait, so it is scaled to fit with bars
+either side — the published frame keeps its size, and the virtual camera in
+Teams or Zoom does not have to renegotiate anything.
+
+Two things are reset by a turn, because both hold a picture of the old
+orientation: the new hot/cold spot baseline, and any tracking templates (those
+re-seed themselves on the next frame).
+
+Rotation is not remembered between launches — the mounting changes with the
+job, and a rotation carried over from last time is more surprising than useful.
+
 ### Why crossings for avg/median, and peaks for hot/cold
 
 Taking the N highest readings along a line is useless: they all land on the

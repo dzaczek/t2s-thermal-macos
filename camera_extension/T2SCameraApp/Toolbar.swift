@@ -22,18 +22,22 @@ extension ThermalViewController: NSToolbarDelegate {
         static let photo = NSToolbarItem.Identifier("photo")
         static let record = NSToolbarItem.Identifier("record")
         static let virtualCam = NSToolbarItem.Identifier("virtualCam")
+        static let rotate = NSToolbarItem.Identifier("rotate")
+        static let track = NSToolbarItem.Identifier("track")
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [ToolbarID.tool, ToolbarID.palette, ToolbarID.markers, ToolbarID.plot, ToolbarID.range,
+        [ToolbarID.tool, ToolbarID.rotate, ToolbarID.palette, ToolbarID.markers,
+         ToolbarID.plot, ToolbarID.range,
          .flexibleSpace,
-         ToolbarID.calibrate, ToolbarID.nuc,
+         ToolbarID.track, ToolbarID.calibrate, ToolbarID.nuc,
          .space,
          ToolbarID.photo, ToolbarID.record]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [ToolbarID.tool, ToolbarID.palette, ToolbarID.markers, ToolbarID.plot, ToolbarID.range,
+        [ToolbarID.tool, ToolbarID.rotate, ToolbarID.palette, ToolbarID.markers,
+         ToolbarID.plot, ToolbarID.range, ToolbarID.track,
          ToolbarID.newSpots, ToolbarID.calibrate, ToolbarID.nuc,
          ToolbarID.photo, ToolbarID.record, ToolbarID.virtualCam,
          .flexibleSpace, .space]
@@ -62,6 +66,27 @@ extension ThermalViewController: NSToolbarDelegate {
             item.view = seg
             item.label = "Drag creates"
             toolbarTool = seg
+
+        case ToolbarID.rotate:
+            // Momentary, not a mode picker: two of the three are relative
+            // turns, so there is nothing for a selected segment to mean.
+            let seg = NSSegmentedControl(labels: ["\u{21BA}", "Reset", "\u{21BB}"],
+                                         trackingMode: .momentary,
+                                         target: self, action: #selector(toolbarRotateClicked(_:)))
+            seg.setToolTip("Turn 90\u{00B0} anticlockwise", forSegment: 0)
+            seg.setToolTip("Back to the camera's own orientation", forSegment: 1)
+            seg.setToolTip("Turn 90\u{00B0} clockwise", forSegment: 2)
+            item.view = seg
+            item.label = "Rotate"
+
+        case ToolbarID.track:
+            let button = NSButton(title: "Track", target: self,
+                                  action: #selector(toggleTrackSelected(_:)))
+            button.bezelStyle = .rounded
+            button.toolTip = "Sticky: the selected object follows what it was placed on."
+            item.view = button
+            item.label = "Track object"
+            toolbarTrack = button
 
         case ToolbarID.markers:
             let seg = NSSegmentedControl(labels: ["Max", "Min", "Centre"],
@@ -150,6 +175,14 @@ extension ThermalViewController: NSToolbarDelegate {
         dragTool = DragTool(rawValue: sender.selectedSegment) ?? .area
     }
 
+    @objc func toolbarRotateClicked(_ sender: NSSegmentedControl) {
+        switch sender.selectedSegment {
+        case 0: rotateLeft(sender)
+        case 1: resetRotation(sender)
+        default: rotateRight(sender)
+        }
+    }
+
     @objc func toolbarMarkersChanged(_ sender: NSSegmentedControl) {
         showMax = sender.isSelected(forSegment: 0)
         showMin = sender.isSelected(forSegment: 1)
@@ -187,5 +220,6 @@ extension ThermalViewController: NSToolbarDelegate {
         toolbarNewSpots?.state = detectChanges ? .on : .off
         toolbarVirtualCam?.state = publishToVirtualCam ? .on : .off
         toolbarRecord?.title = recorder.isRecordingVideo ? "Stop" : "Record"
+        syncTrackButton()
     }
 }

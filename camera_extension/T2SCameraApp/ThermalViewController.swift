@@ -55,6 +55,21 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     /// against the wrong range gives confidently wrong temperatures.
     var measurementRange: ThermalDecoder.Range = .normal
 
+    /// Quarter turns applied to the temperature field before anything is
+    /// measured, drawn or published. Not persisted: the mounting changes with
+    /// the job, and a rotation carried over from last time is more surprising
+    /// than useful.
+    var rotation: ImageRotation = .none
+
+    /// Follows objects that were marked sticky. Templates are seeded by the
+    /// capture pipeline from whichever frame first sees the flag set.
+    private let tracker = ObjectTracker()
+
+    /// The frame as it is rendered: the sensor, turned.
+    private var frameSize: (width: Int, height: Int) {
+        rotation.size(width: ThermalCapture.width, height: ThermalCapture.imageHeight)
+    }
+
     /// What dragging on the image creates.
     enum DragTool: Int { case area, line }
     var dragTool: DragTool = .area {
@@ -96,6 +111,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     weak var toolbarNewSpots: NSButton?
     weak var toolbarVirtualCam: NSButton?
     weak var toolbarRecord: NSButton?
+    weak var toolbarTrack: NSButton?
+    private var trackButton = NSButton()
     private var logButton = NSButton()
     private var logSecondsField = NSTextField()
     private var changeThresholdField = NSTextField()
@@ -300,11 +317,16 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         panel.addSubview(scroll)
         y -= 34
 
+        trackButton = NSButton(title: "Track", target: self,
+                               action: #selector(toggleTrackSelected(_:)))
+        trackButton.frame = NSRect(x: 12, y: y, width: 84, height: 26)
+        trackButton.toolTip = "Sticky: the selected object follows what it was placed on."
+        panel.addSubview(trackButton)
         let removeButton = NSButton(title: "Remove", target: self, action: #selector(removeMeasurement(_:)))
-        removeButton.frame = NSRect(x: 12, y: y, width: 130, height: 26)
+        removeButton.frame = NSRect(x: 102, y: y, width: 88, height: 26)
         panel.addSubview(removeButton)
         let clearButton = NSButton(title: "Clear all", target: self, action: #selector(clearMeasurements(_:)))
-        clearButton.frame = NSRect(x: 150, y: y, width: 138, height: 26)
+        clearButton.frame = NSRect(x: 196, y: y, width: 92, height: 26)
         panel.addSubview(clearButton)
         y -= 32
 
@@ -500,7 +522,13 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         for i in 0..<corrected.count {
             asUInt16[i] = UInt16(max(0, min(Double(ThermalDecoder.tableSize - 1), corrected[i].rounded())))
         }
-        let smoothed = ThermalProcessor.smooth(asUInt16, width: W, height: H)
+        // Turn the corrected counts, not the finished picture: everything
+        // downstream -- markers, measurements, the mouse, the CSV -- then
+        // works in one orientation without knowing there was a rotation.
+        let turn = rotation
+        let (fw, fh) = turn.size(width: W, height: H)
+        let smoothed = turn.apply(ThermalProcessor.smooth(asUInt16, width: W, height: H),
+                                  width: W, height: H)
 
         // Frames whose metadata cannot drive the model are skipped outright;
         // rendering them would publish a 0C image and poison the readouts.
@@ -511,7 +539,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         let temps = lookup(smoothed, in: table)
 
         let extremes = ThermalProcessor.extremes(temps)
-        let centerIndex = (H / 2) * W + W / 2
+        let centerIndex = (fh / 2) * fw + fw / 2
 
         // Objects with their own emissivity need their own table; build one
         // per distinct value rather than per object.
@@ -527,10 +555,31 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         }
         let results: [(Measurement, MeasurementResult)] = items.map { m in
             let source = m.emissivity.flatMap { perEmissivity[$0] } ?? temps
-            return (m, MeasurementEngine.evaluate(m, temps: source, width: W, height: H,
+            return (m, MeasurementEngine.evaluate(m, temps: source, width: fw, height: fh,
                                                   lineExtremeCount: lineExtremeCount,
                                                   lineExtremeMode: lineExtremeMode))
         }
+
+        // Sticky objects. Seeding and following both happen here, on the
+        // frame everyone else is looking at; the store itself is only ever
+        // touched on the main queue, so the move lands on the next frame.
+        var moves: [(name: String, dx: Int, dy: Int)] = []
+        var untrackable: [String] = []
+        for m in items where m.tracked {
+            let c = m.centre
+            if tracker.isTracking(m.name) {
+                if let d = tracker.follow(m.name, centreX: c.x, centreY: c.y,
+                                          temps: temps, width: fw, height: fh),
+                   d.dx != 0 || d.dy != 0 {
+                    moves.append((m.name, d.dx, d.dy))
+                }
+            } else if !tracker.start(m.name, centreX: c.x, centreY: c.y,
+                                     halfWidth: c.halfW, halfHeight: c.halfH,
+                                     temps: temps, width: fw, height: fh) {
+                untrackable.append(m.name)
+            }
+        }
+        let lostTracks = tracker.lost
 
         // Trend history. A spot contributes its own value, an area its
         // average; with nothing placed, the centre is plotted so the chart
@@ -569,7 +618,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         }
 
         let changes = detectChanges
-            ? changeDetector.update(temps, width: W, height: H)
+            ? changeDetector.update(temps, width: fw, height: fh)
             : []
         let scaleMin = manualRange ? manualMin : extremes.minValue
         let scaleMax = manualRange ? manualMax : extremes.maxValue
@@ -588,6 +637,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         let frame = ThermalRenderer.Frame(
             temperatures: temps,
             normalized: normalized,
+            imageWidth: fw,
+            imageHeight: fh,
             extremes: extremes,
             centerTemp: temps[centerIndex],
             palette: palette,
@@ -602,7 +653,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             showsMax: showMax,
             showsMin: showMin,
             showsCentre: showCentre,
-            changes: changes)
+            changes: changes,
+            lostTracks: lostTracks)
 
         let tBeforeRender = CFAbsoluteTimeGetCurrent()
         guard let image = ThermalRenderer.render(frame) else { return }
@@ -627,6 +679,21 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            for move in moves {
+                self.measurements.move(name: move.name, dx: move.dx, dy: move.dy,
+                                       width: fw, height: fh)
+            }
+            for name in untrackable {
+                if let i = self.measurements.index(ofName: name) {
+                    self.measurements.setTracked(false, at: i)
+                }
+            }
+            if let name = untrackable.first {
+                self.setCaptureStatus("\(name) has nothing to lock onto — that patch is too "
+                                      + "even. Put the object over something with visible "
+                                      + "contrast and track it again.")
+                self.syncTrackButton()
+            }
             self.imageView.image = image
             self.setStatus(String(format: "min %.1fC   centre %.1fC   max %.1fC   %@",
                                   extremes.minValue, frame.centerTemp, extremes.maxValue,
@@ -756,6 +823,71 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         }
     }
 
+    @objc func rotateLeft(_ sender: Any?) { setRotation(rotation.turnedLeft()) }
+    @objc func rotateRight(_ sender: Any?) { setRotation(rotation.turnedRight()) }
+    @objc func resetRotation(_ sender: Any?) { setRotation(.none) }
+
+    /// Turning the image turns the objects on it with it, so a marker stays on
+    /// the thing it was measuring instead of jumping to a different part of
+    /// the scene.
+    private func setRotation(_ new: ImageRotation) {
+        guard new != rotation else { return }
+        let old = frameSize
+        let delta = ImageRotation(rawValue: (new.rawValue - rotation.rawValue + 4) % 4) ?? .none
+        measurements.rotate(delta, width: old.width, height: old.height)
+        rotation = new
+
+        let size = frameSize
+        imageView.sensorWidth = size.width
+        imageView.sensorHeight = size.height
+        // Both of these hold a picture of the scene in the old orientation.
+        // The tracker re-seeds itself from the next frame; the change baseline
+        // has to be taken again deliberately.
+        tracker.stopAll()
+        changeDetector.reset()
+        table.reloadData()
+        setStatus("Rotation \(rotation.displayName).")
+    }
+
+    /// Sticky tracking for the selected object.
+    ///
+    /// The measurement keeps its size and its readouts; only where it sits
+    /// changes. Templates are seeded by the capture pipeline, so this just
+    /// sets the flag and lets the next frame do the work.
+    @objc func toggleTrackSelected(_ sender: Any?) {
+        let row = table.selectedRow
+        guard measurements.items.indices.contains(row) else {
+            setCaptureStatus("Select a measurement in the list first, then track it.")
+            return
+        }
+        let m = measurements.items[row]
+        measurements.setTracked(!m.tracked, at: row)
+        if m.tracked { tracker.stop(m.name) }
+        setCaptureStatus(m.tracked
+            ? "\(m.name) is no longer following anything."
+            : "\(m.name) is sticky: it follows what it is on until it loses it.")
+        syncTrackButton()
+        table.reloadData()
+    }
+
+    @objc func stopAllTracking(_ sender: Any?) {
+        for i in measurements.items.indices { measurements.setTracked(false, at: i) }
+        tracker.stopAll()
+        syncTrackButton()
+        table.reloadData()
+        setCaptureStatus("Tracking off for every object.")
+    }
+
+    /// The button is the readout for the selected object's state, so it has to
+    /// follow the selection as well as the toggle.
+    func syncTrackButton() {
+        let row = table.selectedRow
+        let tracked = measurements.items.indices.contains(row)
+            && measurements.items[row].tracked
+        trackButton.title = tracked ? "Untrack" : "Track"
+        toolbarTrack?.title = tracked ? "Untrack" : "Track"
+    }
+
     @objc func toggleVirtualCamera(_ sender: Any?) {
         defer { syncToolbar() }
         publishToVirtualCam.toggle()
@@ -795,6 +927,16 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             item.state = item.tag == dragTool.rawValue ? .on : .off
         case #selector(selectRange(_:)):
             item.state = item.tag == (measurementRange == .high ? 1 : 0) ? .on : .off
+        case #selector(toggleTrackSelected(_:)):
+            let row = table.selectedRow
+            let tracked = measurements.items.indices.contains(row)
+                && measurements.items[row].tracked
+            item.title = tracked ? "Stop Tracking Selected Object" : "Track Selected Object"
+            return measurements.items.indices.contains(row)
+        case #selector(stopAllTracking(_:)):
+            return measurements.items.contains { $0.tracked }
+        case #selector(resetRotation(_:)):
+            return rotation != .none
         case #selector(toggleVideo(_:)):
             item.title = recorder.isRecordingVideo ? "Stop Recording" : "Start Recording"
         case #selector(toggleInterval(_:)):
@@ -811,15 +953,19 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
 
     @objc private func removeMeasurement(_ sender: Any?) {
         let row = table.selectedRow
-        guard row >= 0 else { return }
+        guard measurements.items.indices.contains(row) else { return }
+        tracker.stop(measurements.items[row].name)
         measurements.remove(at: row)
         table.reloadData()
+        syncTrackButton()
     }
 
     @objc private func clearMeasurements(_ sender: Any?) {
         measurements.removeAll()
+        tracker.stopAll()
         history.clear()
         table.reloadData()
+        syncTrackButton()
     }
 
     @objc private func applyEmissivity(_ sender: Any?) {
@@ -854,8 +1000,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         }
         do {
             let url = try recorder.savePhoto(image, temperatures: temps,
-                                             width: ThermalCapture.width,
-                                             height: ThermalCapture.imageHeight)
+                                             width: frameSize.width,
+                                             height: frameSize.height)
             setCaptureStatus("Saved \(url.lastPathComponent)"
                              + (recorder.savesCSV ? " (+ CSV)" : ""))
         } catch {
@@ -1137,7 +1283,9 @@ extension ThermalViewController: NSTableViewDataSource, NSTableViewDelegate {
 
         let text: String
         switch tableColumn?.identifier.rawValue {
-        case "name": text = m.name
+        // A tracked object is marked in the list too, so the state is visible
+        // without hunting for the object on the image.
+        case "name": text = m.tracked ? m.name + " \u{25CE}" : m.name
         case "min":  text = r.map { String(format: "%.1f", $0.minValue) } ?? "-"
         case "avg":  text = r.map { String(format: "%.1f", $0.average) } ?? "-"
         case "max":  text = r.map { String(format: "%.1f", $0.maxValue) } ?? "-"
@@ -1153,6 +1301,7 @@ extension ThermalViewController: NSTableViewDataSource, NSTableViewDelegate {
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = table.selectedRow
+        syncTrackButton()
         guard measurements.items.indices.contains(row) else {
             emissivityField.stringValue = ""
             return

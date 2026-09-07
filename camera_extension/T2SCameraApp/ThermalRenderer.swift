@@ -17,6 +17,55 @@ struct ThermalRenderer {
     static let barWidth = 180
     static var outputWidth: Int { ThermalCapture.width * scale + barWidth }
     static var outputHeight: Int { ThermalCapture.imageHeight * scale }
+    /// The part of the frame the sensor image goes in; the scale bar owns the
+    /// rest. Fixed, whichever way the image is turned -- the virtual camera
+    /// publishes this frame and its size is agreed with the extension.
+    static var imageAreaWidth: Int { ThermalCapture.width * scale }
+
+    /// Where the sensor image sits inside that area, and how big a sensor
+    /// pixel is there.
+    ///
+    /// Turned a quarter, the image is portrait and cannot fill a landscape
+    /// frame: it is scaled to fit and centred, with bars either side. Every
+    /// overlay is placed through here, so markers, boxes and lines follow the
+    /// picture instead of having to be adjusted one by one.
+    struct Layout {
+        var imgW: Int, imgH: Int
+        var pixel: CGFloat
+        var origin: CGPoint
+
+        var rect: CGRect {
+            CGRect(x: origin.x, y: origin.y,
+                   width: CGFloat(imgW) * pixel, height: CGFloat(imgH) * pixel)
+        }
+        /// Sensor rows run top-down; CoreGraphics is bottom-up.
+        func point(x: Int, y: Int) -> CGPoint {
+            CGPoint(x: origin.x + CGFloat(x) * pixel,
+                    y: origin.y + CGFloat(imgH - y) * pixel)
+        }
+        func point(index: Int) -> CGPoint {
+            point(x: index % imgW, y: index / imgW)
+        }
+        func centre(x: Int, y: Int) -> CGPoint {
+            CGPoint(x: origin.x + (CGFloat(x) + 0.5) * pixel,
+                    y: origin.y + (CGFloat(imgH - 1 - y) + 0.5) * pixel)
+        }
+        /// The box covering a span of pixels, both ends included.
+        func box(x0: Int, y0: Int, x1: Int, y1: Int) -> CGRect {
+            CGRect(x: origin.x + CGFloat(x0) * pixel,
+                   y: origin.y + CGFloat(imgH - 1 - y1) * pixel,
+                   width: CGFloat(x1 - x0 + 1) * pixel,
+                   height: CGFloat(y1 - y0 + 1) * pixel)
+        }
+    }
+
+    static func layout(imgW: Int, imgH: Int) -> Layout {
+        let areaW = CGFloat(imageAreaWidth), areaH = CGFloat(outputHeight)
+        let pixel = min(areaW / CGFloat(imgW), areaH / CGFloat(imgH))
+        return Layout(imgW: imgW, imgH: imgH, pixel: pixel,
+                      origin: CGPoint(x: (areaW - CGFloat(imgW) * pixel) / 2,
+                                      y: (areaH - CGFloat(imgH) * pixel) / 2))
+    }
 
     /// The window shows the render downscaled by this much; downsampling is
     /// sharp, so the on-screen view loses nothing.
@@ -34,6 +83,10 @@ struct ThermalRenderer {
     struct Frame {
         var temperatures: [Double]      // per pixel, Celsius
         var normalized: [UInt8]         // per pixel, 0...255 for display
+        /// Dimensions of those buffers. Not the sensor's: a quarter turn has
+        /// already been applied to them by the time they get here.
+        var imageWidth: Int = ThermalCapture.width
+        var imageHeight: Int = ThermalCapture.imageHeight
         var extremes: ThermalProcessor.Extremes
         var centerTemp: Double
         var palette: Palette
@@ -58,6 +111,9 @@ struct ThermalRenderer {
         var showsCentre = true
         /// Areas that recently changed relative to the baseline.
         var changes: [ChangeDetector.Region] = []
+        /// Tracked objects whose target was not found in this frame. They are
+        /// still drawn, marked, where they were last seen.
+        var lostTracks: Set<String> = []
     }
 
     private static let alarmHot = NSColor(calibratedRed: 1.0, green: 0.15, blue: 0.15, alpha: 1)
@@ -65,7 +121,10 @@ struct ThermalRenderer {
 
     static func render(_ frame: Frame) -> CGImage? {
         let w = outputWidth, h = outputHeight
-        let imgW = ThermalCapture.width, imgH = ThermalCapture.imageHeight
+        let imgW = frame.imageWidth, imgH = frame.imageHeight
+        guard frame.temperatures.count >= imgW * imgH,
+              frame.normalized.count >= imgW * imgH else { return nil }
+        let place = layout(imgW: imgW, imgH: imgH)
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
                                   bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
@@ -101,17 +160,16 @@ struct ThermalRenderer {
                                  provider: provider, decode: nil,
                                  shouldInterpolate: true, intent: .defaultIntent) {
             ctx.interpolationQuality = .high
-            ctx.draw(thermal, in: CGRect(x: 0, y: 0, width: imgW * scale, height: imgH * scale))
+            ctx.draw(thermal, in: place.rect)
         }
 
-        drawScaleBar(ctx, frame: frame, x: imgW * scale, width: barWidth, height: h)
+        drawScaleBar(ctx, frame: frame, x: imageAreaWidth, width: barWidth, height: h)
 
         // Markers. Pixel rows run top-down; CoreGraphics is bottom-up.
-        let canvas = CGSize(width: CGFloat(imgW * scale), height: CGFloat(h))
-        let maxPt = point(for: frame.extremes.maxIndex, imgW: imgW, imgH: imgH)
-        let minPt = point(for: frame.extremes.minIndex, imgW: imgW, imgH: imgH)
-        let centerPt = CGPoint(x: CGFloat(imgW / 2 * scale),
-                               y: CGFloat((imgH - imgH / 2) * scale))
+        let canvas = CGSize(width: CGFloat(imageAreaWidth), height: CGFloat(h))
+        let maxPt = place.point(index: frame.extremes.maxIndex)
+        let minPt = place.point(index: frame.extremes.minIndex)
+        let centerPt = place.point(x: imgW / 2, y: imgH / 2)
         if frame.showsMax {
             marker(ctx, at: maxPt, color: .systemRed,
                    label: String(format: "%.1fC", frame.extremes.maxValue), bounds: canvas)
@@ -125,8 +183,8 @@ struct ThermalRenderer {
                    label: String(format: "%.1fC", frame.centerTemp), bounds: canvas)
         }
 
-        drawChanges(ctx, frame: frame, imgH: imgH)
-        drawMeasurements(ctx, frame: frame, imgW: imgW, imgH: imgH)
+        drawChanges(ctx, frame: frame, place: place)
+        drawMeasurements(ctx, frame: frame, place: place)
 
         let hud = "\(frame.palette.displayName)   \(frame.calibrationNote)"
         draw(text: hud, in: ctx, at: CGPoint(x: u(10), y: u(8)), size: u(13), color: .systemYellow)
@@ -143,12 +201,10 @@ struct ThermalRenderer {
 
     /// Dashed outline around anything that just got hotter or colder, so a
     /// new spot reads differently from the solid boxes of placed objects.
-    private static func drawChanges(_ ctx: CGContext, frame: Frame, imgH: Int) {
+    private static func drawChanges(_ ctx: CGContext, frame: Frame, place: Layout) {
         for r in frame.changes {
-            let rect = CGRect(x: CGFloat(r.x0 * scale),
-                              y: CGFloat((imgH - 1 - r.y1) * scale),
-                              width: CGFloat((r.x1 - r.x0 + 1) * scale),
-                              height: CGFloat((r.y1 - r.y0 + 1) * scale)).insetBy(dx: -u(3), dy: -u(3))
+            let rect = place.box(x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1)
+                .insetBy(dx: -u(3), dy: -u(3))
             let color: NSColor = r.isHot ? .systemRed : .systemCyan
 
             ctx.saveGState()
@@ -176,35 +232,42 @@ struct ThermalRenderer {
     /// and coldest pixel inside an area actually sit -- an area average alone
     /// hides a hot spot in the corner, which is usually the thing you're
     /// looking for.
-    private static func drawMeasurements(_ ctx: CGContext, frame: Frame, imgW: Int, imgH: Int) {
+    private static func drawMeasurements(_ ctx: CGContext, frame: Frame, place: Layout) {
         for (m, r) in frame.measurements where m.kind == .line {
-            drawLine(ctx, m: m, r: r, imgW: imgW, imgH: imgH,
-                     canvas: CGSize(width: CGFloat(imgW * scale), height: CGFloat(imgH * scale)))
+            drawLine(ctx, m: m, r: r, place: place, frame: frame)
         }
         for (m, r) in frame.measurements where m.kind != .line {
-            let b = m.bounds(width: imgW, height: imgH)
-            let rect = CGRect(x: CGFloat(b.x0 * scale),
-                              y: CGFloat((imgH - 1 - b.y1) * scale),
-                              width: CGFloat((b.x1 - b.x0 + 1) * scale),
-                              height: CGFloat((b.y1 - b.y0 + 1) * scale))
+            let b = m.bounds(width: place.imgW, height: place.imgH)
+            let rect = place.box(x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1)
+            let track = trackColour(m, frame: frame)
 
+            ctx.saveGState()
             ctx.setLineWidth(u(2))
             ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.7).cgColor)
             ctx.stroke(rect.insetBy(dx: -u(1), dy: -u(1)))
-            ctx.setStrokeColor(NSColor.white.cgColor)
+            ctx.setStrokeColor((track ?? .white).cgColor)
+            // A tracked object is drawn dashed while it is lost, so a marker
+            // that has stopped following something is obvious at a glance
+            // rather than looking like a perfectly good reading.
+            if track != nil && frame.lostTracks.contains(m.name) {
+                ctx.setLineDash(phase: 0, lengths: [u(6), u(4)])
+            }
             ctx.stroke(rect)
+            ctx.restoreGState()
 
             if m.kind == .area {
-                dot(ctx, at: point(for: r.maxIndex, imgW: imgW, imgH: imgH), color: .systemRed)
-                dot(ctx, at: point(for: r.minIndex, imgW: imgW, imgH: imgH), color: .systemBlue)
+                dot(ctx, at: place.point(index: r.maxIndex), color: .systemRed)
+                dot(ctx, at: place.point(index: r.minIndex), color: .systemBlue)
             }
 
             let label = m.kind == .spot
                 ? String(format: "%@ %.1fC", m.name, r.average)
                 : String(format: "%@ %.1f/%.1f/%.1fC", m.name, r.minValue, r.average, r.maxValue)
-            let suffix = m.emissivity.map { String(format: " e%.2f", $0) } ?? ""
+            let suffix = (m.emissivity.map { String(format: " e%.2f", $0) } ?? "")
+                + trackSuffix(m, frame: frame)
             draw(text: label + suffix, in: ctx,
-                 at: CGPoint(x: rect.minX, y: rect.maxY + u(3)), size: u(12), color: .white)
+                 at: CGPoint(x: rect.minX, y: rect.maxY + u(3)), size: u(12),
+                 color: track ?? .white)
 
             if let history = frame.histories[m.name], history.count > 1 {
                 sparkline(ctx, values: history,
@@ -217,29 +280,31 @@ struct ThermalRenderer {
     /// A line profile: the line itself, its overall readout, and a marker on
     /// each of the N peaks found along it.
     private static func drawLine(_ ctx: CGContext, m: Measurement, r: MeasurementResult,
-                                 imgW: Int, imgH: Int, canvas: CGSize) {
-        func pt(_ px: Int, _ py: Int) -> CGPoint {
-            CGPoint(x: CGFloat(px * scale) + CGFloat(scale) / 2,
-                    y: CGFloat((imgH - 1 - py) * scale) + CGFloat(scale) / 2)
-        }
-        let a = pt(m.x, m.y), b = pt(m.x2, m.y2)
+                                 place: Layout, frame: Frame) {
+        let a = place.centre(x: m.x, y: m.y), b = place.centre(x: m.x2, y: m.y2)
+        let track = trackColour(m, frame: frame)
 
+        ctx.saveGState()
         ctx.setLineCap(.round)
         ctx.setLineWidth(u(3.5))
         ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.7).cgColor)
         ctx.move(to: a); ctx.addLine(to: b); ctx.strokePath()
         ctx.setLineWidth(u(2))
-        ctx.setStrokeColor(NSColor.white.cgColor)
+        ctx.setStrokeColor((track ?? .white).cgColor)
+        if track != nil && frame.lostTracks.contains(m.name) {
+            ctx.setLineDash(phase: 0, lengths: [u(6), u(4)])
+        }
         ctx.move(to: a); ctx.addLine(to: b); ctx.strokePath()
+        ctx.restoreGState()
 
         // End caps, so a line is distinguishable from an area's edge.
         for p in [a, b] {
-            ctx.setFillColor(NSColor.white.cgColor)
+            ctx.setFillColor((track ?? .white).cgColor)
             ctx.fillEllipse(in: CGRect(x: p.x - u(3), y: p.y - u(3), width: u(6), height: u(6)))
         }
 
         for (rank, e) in r.extrema.enumerated() {
-            let p = point(for: e.index, imgW: imgW, imgH: imgH)
+            let p = place.point(index: e.index)
             dot(ctx, at: p, color: rank == 0 ? .systemRed : .systemOrange)
             draw(text: String(format: "%.1f", e.value), in: ctx,
                  at: CGPoint(x: p.x + u(6), y: p.y - u(6)), size: u(11), color: .white)
@@ -247,10 +312,23 @@ struct ThermalRenderer {
 
         let label = String(format: "%@ min %.1f  avg %.1f  med %.1f  max %.1fC",
                            m.name, r.minValue, r.average, r.median, r.maxValue)
+            + trackSuffix(m, frame: frame)
         var ly = Swift.max(a.y, b.y) + u(4)
-        if ly > canvas.height - u(16) { ly = Swift.min(a.y, b.y) - u(16) }
+        if ly > place.rect.maxY - u(16) { ly = Swift.min(a.y, b.y) - u(16) }
         draw(text: label, in: ctx, at: CGPoint(x: Swift.min(a.x, b.x), y: ly),
-             size: u(12), color: .white)
+             size: u(12), color: track ?? .white)
+    }
+
+    /// Green while an object is following what it was placed on, amber once it
+    /// has lost it and is sitting where it last saw it.
+    private static func trackColour(_ m: Measurement, frame: Frame) -> NSColor? {
+        guard m.tracked else { return nil }
+        return frame.lostTracks.contains(m.name) ? .systemOrange : .systemGreen
+    }
+
+    private static func trackSuffix(_ m: Measurement, frame: Frame) -> String {
+        guard m.tracked else { return "" }
+        return frame.lostTracks.contains(m.name) ? "  track lost" : "  track"
     }
 
     /// Small trend plot beside a measurement, normalised to its own range so a
@@ -288,11 +366,6 @@ struct ThermalRenderer {
         ctx.fillEllipse(in: CGRect(x: p.x - u(3.5), y: p.y - u(3.5), width: u(7), height: u(7)))
         ctx.setFillColor(color.cgColor)
         ctx.fillEllipse(in: CGRect(x: p.x - u(2.5), y: p.y - u(2.5), width: u(5), height: u(5)))
-    }
-
-    private static func point(for index: Int, imgW: Int, imgH: Int) -> CGPoint {
-        let px = index % imgW, py = index / imgW
-        return CGPoint(x: CGFloat(px * scale), y: CGFloat((imgH - py) * scale))
     }
 
     private static func drawScaleBar(_ ctx: CGContext, frame: Frame, x: Int, width: Int, height: Int) {
