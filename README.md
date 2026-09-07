@@ -78,7 +78,6 @@ You need Xcode, `brew install xcodegen`, and an Apple Developer account,
 because a system extension will not load unsigned.
 
 ```bash
-cd camera_extension
 ./build.sh --run
 ```
 
