@@ -492,11 +492,12 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         panel.addSubview(rawToggle)
         y -= 30
 
-        panoramaButton = NSButton(title: "Panorama", target: self,
+        panoramaButton = NSButton(title: "Panorama (beta)", target: self,
                                   action: #selector(togglePanorama(_:)))
         panoramaButton.frame = NSRect(x: 12, y: y, width: W - 24, height: 26)
-        panoramaButton.toolTip = "Start sweeping, in any direction, and every frame is laid "
-            + "onto one growing picture. Press again to finish."
+        panoramaButton.toolTip = "Beta. Start sweeping, in any direction, and every frame is "
+            + "laid onto one growing picture. Press again to finish. Rolling the camera "
+            + "is the one movement it cannot follow."
         panel.addSubview(panoramaButton)
         y -= 32
 
@@ -1016,7 +1017,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         panoramaQueue.async { [weak self] in
             guard let self, let builder = self.panorama else { return }
             self.panorama = nil
-            DispatchQueue.main.async { self.panoramaButton.title = "Panorama" }
+            DispatchQueue.main.async { self.panoramaButton.title = "Panorama (beta)" }
 
             guard let result = builder.finish() else {
                 self.setCaptureStatus("Panorama came to nothing: too few frames could be placed. "
