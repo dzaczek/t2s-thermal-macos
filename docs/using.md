@@ -178,6 +178,54 @@ python3 tools/read_t2sraw.py shot.t2sraw
 python3 tools/read_t2sraw.py shot.t2sraw --csv counts.csv
 ```
 
+## Laying an ordinary picture underneath
+
+A thermal picture says where the heat is and almost nothing about what the
+thing is — a warm rectangle could be a breaker, a socket or a sandwich. Every
+commercial imager blends in a visible-light picture for that reason. This
+camera has no second sensor, so it borrows one: clamp a webcam beside the T2S+,
+point them the same way, and the app lines the two up.
+
+Pick the camera under **Visible overlay** in the side panel. The thermal camera
+itself is kept out of that list, and so is this app's own virtual camera.
+
+### Lining them up
+
+Press **Line Them Up…**. It asks for four points, and uses a fingertip as the
+landmark, because a fingertip is the one thing both cameras can see clearly:
+skin runs well above room temperature, so the thermal side simply finds the
+hottest thing in shot, while you click the same fingertip in the webcam
+picture.
+
+Hold a finger towards the **top left** of the scene where both cameras can see
+it, click it in the window, then repeat for the other three corners. Spread
+them out — four points bunched in the middle pin the mapping down badly. The
+status line tells you whether the thermal camera can see your finger yet; if it
+cannot, nothing is recorded and it says so rather than pairing your click with
+whatever happened to be warmest.
+
+Why four and not two: the two cameras sit a few centimetres apart and are never
+quite parallel, so a rectangle on the wall is a slight trapezium in one of
+them. A shift and a scale cannot express that; four points can, and they cover
+the different fields of view and any twist between the two at the same time.
+
+If the four points cannot pin a mapping down — three in a line, say — it says
+so and starts again rather than saving something that would put the pictures in
+the wrong place.
+
+### What it cannot do
+
+The mapping is exact for **one plane**: the one you calibrated on. Things much
+nearer or further sit slightly off, and by more the further apart the two
+cameras are mounted. Keep them close together and calibrate at roughly the
+distance you work at.
+
+Move either camera and the calibration is void. Do it again.
+
+The blend slider runs from all thermal to all webcam. The calibration is saved,
+so it survives a restart, and it is stored against the *unrotated* sensor, so
+turning the picture cannot put the two out of step.
+
 ## Rotating the image
 
 Three buttons in the toolbar: **↺**, **Reset**, **↻**. Or **⌘[**, **⌘]** and

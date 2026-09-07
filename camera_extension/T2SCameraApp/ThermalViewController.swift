@@ -2,7 +2,8 @@ import Cocoa
 import AVFoundation
 
 /// The live thermal view, its measurement tools and the capture controls.
-final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTextFieldDelegate {
+final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTextFieldDelegate,
+                                  NSMenuDelegate {
 
     // Layout. The image keeps its native 858x576 render size; the panel on the
     // right holds the measurement list and capture controls.
@@ -143,7 +144,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private let panelScroll = NSScrollView()
     private let panelContent = NSView()
     /// Tall enough for every control with room for the status text underneath.
-    private static let panelContentHeight: CGFloat = 896
+    private static let panelContentHeight: CGFloat = 996
     private var hasScrolledPanelToTop = false
 
     /// Latest decoded frame, kept so calibration and capture can act on it.
@@ -158,6 +159,9 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     /// The sensor's own counts for the latest frame, kept so a capture can be
     /// saved in a form that survives a change of mind about calibration.
     private var lastRawFrame: [UInt16] = []
+    /// Temperatures before any rotation, which is the frame the overlay
+    /// calibration is expressed in.
+    private var lastSensorTemps: [Double] = []
     private var lastResults: [(Measurement, MeasurementResult)] = []
     private var lastLogRow: [String: Double] = [:]
 
@@ -177,6 +181,16 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
 
     /// The lens, measured from sweeps rather than taken from a datasheet.
     private var optics = Optics.load()
+
+    /// An ordinary camera clamped beside the thermal one, and how its picture
+    /// is laid under the thermal image.
+    private let visible = VisibleCapture()
+    private var overlay = Overlay.load()
+    private var visibleCameras: [AVCaptureDevice] = []
+    private var visiblePopup = NSPopUpButton()
+    private var overlayCalibrateButton = NSButton()
+    private var overlayBlendSlider = NSSlider()
+    private var overlayWindow: OverlayCalibrationWindow?
 
     /// A sweep in progress. Frames are added on their own queue: laying one
     /// down costs a couple of milliseconds and the live view should not wait
@@ -460,6 +474,38 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         panel.addSubview(applyButton)
         y -= 40
 
+        let overlayTitle = NSTextField(labelWithString: "Visible overlay")
+        overlayTitle.frame = NSRect(x: 12, y: y, width: W - 24, height: 18)
+        overlayTitle.font = .boldSystemFont(ofSize: 12)
+        panel.addSubview(overlayTitle)
+        y -= 28
+
+        visiblePopup = NSPopUpButton(frame: NSRect(x: 12, y: y, width: W - 24, height: 24))
+        visiblePopup.target = self
+        visiblePopup.action = #selector(visibleCameraChosen(_:))
+        visiblePopup.toolTip = "An ordinary camera clamped beside the thermal one. "
+            + "The thermal picture shows where the heat is; this shows what the thing is."
+        // Opening the menu is the natural moment to notice a camera plugged
+        // in since launch, and NSMenu asks its delegate first.
+        visiblePopup.menu?.delegate = self
+        panel.addSubview(visiblePopup)
+        rebuildVisibleCameraList()
+        y -= 32
+
+        overlayCalibrateButton = NSButton(title: "Line Them Up\u{2026}", target: self,
+                                          action: #selector(calibrateOverlay(_:)))
+        overlayCalibrateButton.frame = NSRect(x: 12, y: y, width: 150, height: 26)
+        overlayCalibrateButton.toolTip = "Four points, matched with a fingertip: the thermal "
+            + "camera finds it by its warmth and you click it in the webcam picture."
+        panel.addSubview(overlayCalibrateButton)
+        panel.addSubview(label("blend", x: 172, y: y + 4, w: 40))
+        overlayBlendSlider = NSSlider(value: overlay.blend, minValue: 0, maxValue: 1,
+                                      target: self, action: #selector(overlayBlendChanged(_:)))
+        overlayBlendSlider.frame = NSRect(x: 208, y: y + 2, width: 80, height: 22)
+        overlayBlendSlider.toolTip = "All thermal on the left, all webcam on the right."
+        panel.addSubview(overlayBlendSlider)
+        y -= 40
+
         let capTitle = NSTextField(labelWithString: "Capture")
         capTitle.frame = NSRect(x: 12, y: y, width: W - 24, height: 18)
         capTitle.font = .boldSystemFont(ofSize: 12)
@@ -687,8 +733,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         // works in one orientation without knowing there was a rotation.
         let turn = rotation
         let (fw, fh) = turn.size(width: W, height: H)
-        let smoothed = turn.apply(ThermalProcessor.smooth(asUInt16, width: W, height: H),
-                                  width: W, height: H)
+        let unrotatedSmoothed = ThermalProcessor.smooth(asUInt16, width: W, height: H)
+        let smoothed = turn.apply(unrotatedSmoothed, width: W, height: H)
 
         // Frames whose metadata cannot drive the model are skipped outright;
         // rendering them would publish a 0C image and poison the readouts.
@@ -697,6 +743,23 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
                 range: measurementRange,
                 scale: calibration.scale, bias: calibration.bias) else { return }
         let temps = lookup(smoothed, in: table)
+
+        // The calibration pairs a webcam pixel with a *sensor* pixel, so the
+        // untuned field is what it has to be matched against. When nothing is
+        // turned the two are the same array and there is nothing to redo.
+        let sensorTemps = turn == .none ? temps : lookup(unrotatedSmoothed, in: table)
+        frameLock.lock()
+        lastSensorTemps = sensorTemps
+        frameLock.unlock()
+
+        // The webcam picture is brought into sensor coordinates and then
+        // turned with everything else, so rotating the view cannot put the
+        // two pictures out of step.
+        var visibleLayer: [Double]?
+        if overlay.isOn, let picture = visible.currentFrame(),
+           let aligned = overlay.aligned(picture, thermalWidth: W, thermalHeight: H) {
+            visibleLayer = turn.apply(aligned, width: W, height: H)
+        }
 
         let extremes = ThermalProcessor.extremes(temps)
         let centerIndex = (fh / 2) * fw + fw / 2
@@ -816,6 +879,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             dewPointThreshold: showDewPoint ? ambient.dewPoint + dewPointMargin : nil,
             dewPoint: showDewPoint ? ambient.dewPoint : nil,
             deltas: deltas,
+            visible: visibleLayer,
+            visibleBlend: overlay.blend,
             recordingNote: note,
             showsMax: showMax,
             showsMin: showMin,
@@ -969,6 +1034,95 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             setCaptureStatus("Super photo: \(gathered) of "
                              + "\(ThermalViewController.superPhotoFrames) frames\u{2026}")
         }
+    }
+
+    // MARK: - Visible overlay
+
+    /// Fills the camera list. Rebuilt on demand rather than watched: cameras
+    /// are plugged in rarely and a stale list costs one reopen of the menu.
+    private func rebuildVisibleCameraList() {
+        visibleCameras = VisibleCapture.candidates()
+        visiblePopup.removeAllItems()
+        visiblePopup.addItem(withTitle: "No visible camera")
+        for device in visibleCameras {
+            visiblePopup.addItem(withTitle: device.localizedName)
+        }
+        if let name = visible.deviceName,
+           let index = visibleCameras.firstIndex(where: { $0.localizedName == name }) {
+            visiblePopup.selectItem(at: index + 1)
+        } else {
+            visiblePopup.selectItem(at: 0)
+        }
+        syncOverlayControls()
+    }
+
+    @objc private func visibleCameraChosen(_ sender: NSPopUpButton) {
+        let index = sender.indexOfSelectedItem - 1
+        guard index >= 0, index < visibleCameras.count else {
+            visible.stop()
+            overlay.isOn = false
+            syncOverlayControls()
+            setCaptureStatus("Visible overlay off.")
+            return
+        }
+        do {
+            try visible.start(device: visibleCameras[index])
+            overlay.isOn = true
+            syncOverlayControls()
+            setCaptureStatus(overlay.isCalibrated
+                ? "Overlaying \(visibleCameras[index].localizedName)."
+                : "\(visibleCameras[index].localizedName) is running, but the two cameras have "
+                  + "not been lined up yet \u{2014} press Line Them Up.")
+        } catch {
+            visiblePopup.selectItem(at: 0)
+            setCaptureStatus(error.localizedDescription)
+        }
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === visiblePopup.menu else { return }
+        rebuildVisibleCameraList()
+    }
+
+    @objc private func overlayBlendChanged(_ sender: NSSlider) {
+        overlay.blend = sender.doubleValue
+        overlay.save()
+    }
+
+    private func syncOverlayControls() {
+        overlayCalibrateButton.isEnabled = visible.isRunning
+        overlayBlendSlider.isEnabled = visible.isRunning && overlay.isCalibrated
+        overlayBlendSlider.doubleValue = overlay.blend
+    }
+
+    @objc func calibrateOverlay(_ sender: Any?) {
+        guard visible.isRunning else {
+            setCaptureStatus("Choose a visible camera first.")
+            return
+        }
+        let window = overlayWindow ?? OverlayCalibrationWindow()
+        overlayWindow = window
+        window.visibleFrameProvider = { [weak self] in self?.visible.currentFrame() }
+        // The pairing is made in sensor coordinates, before any rotation, so
+        // turning the picture afterwards cannot invalidate the calibration.
+        window.warmPointProvider = { [weak self] in
+            guard let self else { return nil }
+            self.frameLock.lock()
+            let temps = self.lastSensorTemps
+            self.frameLock.unlock()
+            return Overlay.warmPoint(temps, width: ThermalCapture.width,
+                                     height: ThermalCapture.imageHeight)
+        }
+        window.onFinished = { [weak self] homography in
+            guard let self else { return }
+            self.overlay.homography = homography
+            self.overlay.isOn = true
+            self.overlay.save()
+            self.syncOverlayControls()
+            self.setCaptureStatus("The two cameras are lined up. Use the blend slider to mix "
+                                  + "them. Do it again if you move either one.")
+        }
+        window.showWindow(nil)
     }
 
     // MARK: - Panorama

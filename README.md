@@ -51,6 +51,9 @@ anything first. Also a reliable way to derail a standup.
 * Panorama: start sweeping and every frame is laid onto one picture that grows
   as you go, in any direction, for as long as you keep going. A wall, a rack or
   a run of pipework in one image instead of a dozen
+* A visible-light overlay. Clamp any webcam beside the thermal camera, line the
+  two up with four points of a fingertip, and blend them: heat where it is,
+  and what the thing actually is
 * PNG stills with the full 256x192 temperature matrix beside them as CSV,
   H.264 video, time-lapse, and a running CSV log of your measurements
 * Optionally the sensor's own counts too, so a capture can be decoded again

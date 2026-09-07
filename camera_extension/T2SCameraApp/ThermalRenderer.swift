@@ -112,6 +112,11 @@ struct ThermalRenderer {
         /// Difference between an object and whatever it is compared against,
         /// keyed by object name.
         var deltas: [String: Double] = [:]
+        /// An ordinary camera's picture of the same scene, already lined up
+        /// pixel for pixel and scaled to 0...255. Nil when there is none.
+        var visible: [Double]?
+        /// How much of it to mix in: 0 is all thermal, 1 all webcam.
+        var visibleBlend: Double = 0
         var recordingNote: String?
         /// The three built-in markers are independently hideable: on a scene
         /// with user-placed objects they are mostly clutter, and the global
@@ -151,6 +156,7 @@ struct ThermalRenderer {
         var rgba = [UInt8](repeating: 255, count: imgW * imgH * 4)
         let hot = rgbComponents(alarmHot), cold = rgbComponents(alarmCold)
         let damp = rgbComponents(dewRisk)
+        let blend = max(0, min(1, frame.visibleBlend))
         for i in 0..<(imgW * imgH) {
             let t = frame.temperatures[i]
             // Condensation risk goes on first: a surface that is about to get
@@ -168,9 +174,22 @@ struct ThermalRenderer {
                 continue
             }
             let v = Int(frame.normalized[i])
-            rgba[i * 4 + 0] = lut[v * 3 + 0]
-            rgba[i * 4 + 1] = lut[v * 3 + 1]
-            rgba[i * 4 + 2] = lut[v * 3 + 2]
+            var r = Double(lut[v * 3 + 0])
+            var g = Double(lut[v * 3 + 1])
+            var b = Double(lut[v * 3 + 2])
+            // The webcam picture goes in as plain grey. Mixing it towards
+            // grey rather than modulating the colour keeps the blend
+            // predictable: the slider does exactly what it looks like it
+            // does, and at nought the thermal image is untouched.
+            if let visible = frame.visible, blend > 0, i < visible.count {
+                let grey = visible[i]
+                r += (grey - r) * blend
+                g += (grey - g) * blend
+                b += (grey - b) * blend
+            }
+            rgba[i * 4 + 0] = UInt8(max(0, min(255, r)))
+            rgba[i * 4 + 1] = UInt8(max(0, min(255, g)))
+            rgba[i * 4 + 2] = UInt8(max(0, min(255, b)))
         }
         if let provider = CGDataProvider(data: Data(rgba) as CFData),
            let thermal = CGImage(width: imgW, height: imgH, bitsPerComponent: 8,
