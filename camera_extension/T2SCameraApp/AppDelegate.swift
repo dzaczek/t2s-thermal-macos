@@ -168,6 +168,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(.separator())
         item(viewMenu, "Highlight New Hot / Cold Spots",
              #selector(ThermalViewController.toggleChangeDetection(_:)))
+        item(viewMenu, "Highlight Condensation Risk",
+             #selector(ThermalViewController.toggleDewPoint(_:)))
         viewItem.submenu = viewMenu
         mainMenu.addItem(viewItem)
 

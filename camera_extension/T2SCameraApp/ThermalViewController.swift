@@ -1,4 +1,5 @@
 import Cocoa
+import AVFoundation
 
 /// The live thermal view, its measurement tools and the capture controls.
 final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTextFieldDelegate {
@@ -40,6 +41,15 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private var manualMax = 40.0
     private var isothermAbove: Double?
     private var isothermBelow: Double?
+
+    /// Air temperature and humidity, which the radiometric model needs and
+    /// which give the dew point. Changes are pushed to the camera, since the
+    /// model reads them back out of the frame metadata.
+    private var ambient = Ambient()
+    var showDewPoint = false
+    /// A surface this close to the dew point is already worth flagging: the
+    /// reading has its own error, and damp does not wait for the exact number.
+    private var dewPointMargin = 1.0
 
     /// The built-in readouts. Hiding one removes both its marker and its
     /// trace, so what is on screen is what is plotted and logged.
@@ -117,9 +127,23 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private var logSecondsField = NSTextField()
     private var changeThresholdField = NSTextField()
     private var linePointsField = NSTextField()
+    private var airTempField = NSTextField()
+    private var humidityField = NSTextField()
+    private var dewPointToggle = NSButton()
+    private var materialPopup = NSPopUpButton()
+    private var referencePopup = NSPopUpButton()
     private var gestureHint = NSTextField(labelWithString: "")
     private var lineModeControl = NSSegmentedControl()
     private var panelView = NSView()
+    /// The panel's controls live in here and it scrolls, because they do not
+    /// fit. They never did: laid out straight into the panel, the last control
+    /// ended up below the bottom edge and the status text was built with a
+    /// height of -28, so capture messages had nowhere to appear.
+    private let panelScroll = NSScrollView()
+    private let panelContent = NSView()
+    /// Tall enough for every control with room for the status text underneath.
+    private static let panelContentHeight: CGFloat = 820
+    private var hasScrolledPanelToTop = false
 
     /// Latest decoded frame, kept so calibration and capture can act on it.
     private var lastCenterRaw: Double = 0
@@ -156,15 +180,15 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private func buildUI() {
         imageView.onAddSpot = { [weak self] x, y in
             self?.measurements.addSpot(x: x, y: y)
-            self?.table.reloadData()
+            self?.measurementsChanged()
         }
         imageView.onAddArea = { [weak self] x, y, w, h in
             self?.measurements.addArea(x: x, y: y, w: w, h: h)
-            self?.table.reloadData()
+            self?.measurementsChanged()
         }
         imageView.onAddLine = { [weak self] x, y, x2, y2 in
             self?.measurements.addLine(x: x, y: y, x2: x2, y2: y2)
-            self?.table.reloadData()
+            self?.measurementsChanged()
         }
         view.addSubview(imageView)
         view.addSubview(chartView)
@@ -188,6 +212,15 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         let mainW = max(320, b.width - panelW)
 
         panelView.frame = NSRect(x: b.width - panelW, y: 0, width: panelW, height: b.height)
+        panelScroll.frame = panelView.bounds
+        // A scroll view with unflipped contents opens at the bottom. Put it at
+        // the top once, then leave the user's scrolling alone.
+        if !hasScrolledPanelToTop, panelScroll.contentSize.height > 0 {
+            hasScrolledPanelToTop = true
+            let overflow = ThermalViewController.panelContentHeight - panelScroll.contentSize.height
+            panelScroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, overflow)))
+            panelScroll.reflectScrolledClipView(panelScroll.contentView)
+        }
 
         statusLabel.frame = NSRect(x: 12, y: 5, width: mainW - 24, height: 16)
         controlBar.frame = NSRect(x: 0, y: ThermalViewController.statusHeight,
@@ -265,13 +298,27 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         isoAboveField.placeholderString = "off"
         isoBelowField.placeholderString = "off"
 
+        airTempField = numberField(String(format: "%.0f", ambient.airTemp), x: 0, y: 0, w: 0,
+                                   action: #selector(ambientChanged(_:)))
+        humidityField = numberField(String(format: "%.0f", ambient.humidity), x: 0, y: 0, w: 0,
+                                    action: #selector(ambientChanged(_:)))
+
         add("scale min °C", minField, x: 12, w: 62)
         add("scale max °C", maxField, x: 84, w: 62)
         add("alarm > °C", isoAboveField, x: 166, w: 62)
         add("alarm < °C", isoBelowField, x: 238, w: 62)
         add("new spot Δ°C", changeThresholdField, x: 320, w: 62)
+        add("air °C", airTempField, x: 402, w: 52)
+        add("humidity %", humidityField, x: 464, w: 52)
 
-        gestureHint.frame = NSRect(x: 400, y: 8, width: 340, height: 14)
+        dewPointToggle = NSButton(checkboxWithTitle: "Damp risk", target: self,
+                                  action: #selector(toggleDewPoint(_:)))
+        dewPointToggle.frame = NSRect(x: 528, y: 6, width: 100, height: 22)
+        dewPointToggle.toolTip = "Paints every surface at or near the dew point, "
+            + "where condensation forms and mould follows."
+        controlBar.addSubview(dewPointToggle)
+
+        gestureHint.frame = NSRect(x: 640, y: 8, width: 340, height: 14)
         gestureHint.font = .systemFont(ofSize: 10)
         gestureHint.textColor = .tertiaryLabelColor
         controlBar.addSubview(gestureHint)
@@ -281,16 +328,25 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     }
 
     private func buildPanel() {
-        let panel = panelView
-        panel.frame = NSRect(x: 0, y: 0,
-                             width: ThermalViewController.panelWidth,
-                             height: ThermalViewController.contentHeight)
-        panel.wantsLayer = true
-        panel.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        view.addSubview(panel)
+        panelView.frame = NSRect(x: 0, y: 0,
+                                 width: ThermalViewController.panelWidth,
+                                 height: ThermalViewController.contentHeight)
+        panelView.wantsLayer = true
+        panelView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        view.addSubview(panelView)
 
         let W = ThermalViewController.panelWidth
-        var y = ThermalViewController.contentHeight - 28
+        panelContent.frame = NSRect(x: 0, y: 0, width: W,
+                                    height: ThermalViewController.panelContentHeight)
+        panelScroll.documentView = panelContent
+        panelScroll.hasVerticalScroller = true
+        panelScroll.drawsBackground = false
+        panelScroll.autohidesScrollers = true
+        panelView.addSubview(panelScroll)
+
+        // Everything below goes into the scrolling content, not the panel.
+        let panel = panelContent
+        var y = ThermalViewController.panelContentHeight - 28
 
         let title = NSTextField(labelWithString: "Measurements")
         title.frame = NSRect(x: 12, y: y, width: W - 24, height: 18)
@@ -347,8 +403,31 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         panel.addSubview(lineModeControl)
         y -= 32
 
+        panel.addSubview(label("Compare selected with", x: 12, y: y + 4, w: 140))
+        y -= 26
+        referencePopup = NSPopUpButton(frame: NSRect(x: 12, y: y, width: W - 24, height: 24))
+        referencePopup.target = self
+        referencePopup.action = #selector(referenceChanged(_:))
+        referencePopup.toolTip = "A difference is what an inspection turns on: "
+            + "a warm terminal only means something next to the cold one beside it."
+        panel.addSubview(referencePopup)
+        rebuildReferencePopup()
+        y -= 32
+
         panel.addSubview(label("Emissivity of selected (blank = global)", x: 12, y: y + 4, w: W - 24))
+        y -= 26
+        materialPopup = NSPopUpButton(frame: NSRect(x: 12, y: y, width: W - 24, height: 24))
+        materialPopup.addItem(withTitle: "Material…")
+        for entry in Materials.all {
+            materialPopup.addItem(withTitle: String(format: "%@  %.2f", entry.name, entry.emissivity))
+        }
+        materialPopup.target = self
+        materialPopup.action = #selector(materialChosen(_:))
+        materialPopup.toolTip = "Typical values. Surface finish matters more than the "
+            + "material, so measure against something known when it counts."
+        panel.addSubview(materialPopup)
         y -= 28
+
         emissivityField = numberField("", x: 12, y: y, w: 80,
                                       action: #selector(applyEmissivity(_:)))
         emissivityField.alignment = .left
@@ -420,10 +499,6 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         captureStatus.maximumNumberOfLines = 6
         captureStatus.lineBreakMode = .byWordWrapping
         panel.addSubview(captureStatus)
-
-        // Contents are laid out from the panel's top, so they must keep their
-        // distance from it rather than from the bottom when the window grows.
-        for child in panel.subviews { child.autoresizingMask = [.minYMargin] }
     }
 
     /// Spells out what the current tool does, so the mode is never a guess.
@@ -461,6 +536,31 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         capture.onFrame = { [weak self] raw in
             self?.handle(raw: raw)
         }
+
+        // Ask before looking. Without permission macOS does not merely refuse
+        // frames, it hides the camera from device discovery altogether -- so
+        // the app reported "camera not found" and, never having asked, never
+        // got the chance to be allowed. It only ever worked because the
+        // permission happened to have been granted already, and it came back
+        // the moment the app was signed with a different certificate, which
+        // macOS treats as a different app.
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            beginCapture()
+        case .notDetermined:
+            setStatus("Waiting for permission to use the camera\u{2026}")
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if granted { self.beginCapture() } else { self.reportCameraDenied() }
+                }
+            }
+        default:
+            reportCameraDenied()
+        }
+    }
+
+    private func beginCapture() {
         do {
             try capture.start()
             setStatus(calibration.isCalibrated
@@ -469,7 +569,11 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         } catch {
             setStatus(error.localizedDescription)
         }
+    }
 
+    private func reportCameraDenied() {
+        setStatus("No permission to use the camera. Turn it on in System Settings \u{25B8} "
+                  + "Privacy & Security \u{25B8} Camera, then start the app again.")
     }
 
     /// Puts the camera into the selected range and points the calibration at
@@ -514,7 +618,17 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         let tStart = CFAbsoluteTimeGetCurrent()
         Profile.shared.frameArrived()
         let W = ThermalCapture.width, H = ThermalCapture.imageHeight
-        let meta = ThermalDecoder.metadata(from: raw)
+        var meta = ThermalDecoder.metadata(from: raw)
+        // The air settings are applied here rather than written to the camera.
+        // The model runs on this side anyway, and the firmware only reliably
+        // accepts one parameter change per session -- so pushing them would
+        // work once and then quietly stop, which is worse than not trying.
+        // Humidity goes in as a fraction, which is what the vapour-content
+        // formula in the decoder expects.
+        meta.airTemp = ambient.airTemp
+        meta.reflectedTemp = ambient.reflectedTemp
+        meta.humidity = ambient.humidity / 100
+        meta.distance = ambient.distance
         var corrected = calibration.applyCorrection(raw)
         calibration.repairDeadPixels(&corrected)
 
@@ -559,6 +673,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
                                                   lineExtremeCount: lineExtremeCount,
                                                   lineExtremeMode: lineExtremeMode))
         }
+
+        let deltas = MeasurementStore.deltas(from: results, airTemp: ambient.airTemp)
 
         // Sticky objects. Seeding and following both happen here, on the
         // frame everyone else is looking at; the store itself is only ever
@@ -609,6 +725,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
                 row["\(m.name)_max"] = r.maxValue
             }
         }
+        // The difference is usually the number the log is being kept for.
+        for (name, delta) in deltas { row["\(name)_delta"] = delta }
 
         var sparklines: [String: [Double]] = [:]
         if chartPosition == .inline {
@@ -649,6 +767,9 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             histories: sparklines,
             isothermAbove: isothermAbove,
             isothermBelow: isothermBelow,
+            dewPointThreshold: showDewPoint ? ambient.dewPoint + dewPointMargin : nil,
+            dewPoint: showDewPoint ? ambient.dewPoint : nil,
+            deltas: deltas,
             recordingNote: note,
             showsMax: showMax,
             showsMin: showMin,
@@ -750,6 +871,105 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     // MARK: - Image actions
 
     @objc private func noop(_ sender: Any?) {}
+
+    /// Takes numeric fields as they are typed.
+    ///
+    /// NSTextField only sends its action on Return. The fields were given a
+    /// delegate so that a value typed and then clicked away from would still
+    /// count, but the delegate method was never written, so `tidy: false` had
+    /// no caller and typing 9 into "mark N points" did nothing until you
+    /// pressed Return. The action still fires on Return, and that is where
+    /// the value gets tidied up and clamped.
+    func controlTextDidChange(_ notification: Notification) {
+        guard let field = notification.object as? NSTextField else { return }
+        if field === linePointsField { applyLinePoints(tidy: false) }
+        else if field === changeThresholdField { applyChangeThreshold(tidy: false) }
+        else if field === minField || field === maxField { applyRange(tidy: false) }
+        else if field === isoAboveField || field === isoBelowField { isothermChanged(field) }
+        else if field === airTempField || field === humidityField { applyAmbient(tidy: false) }
+    }
+
+    @objc private func ambientChanged(_ sender: Any?) {
+        applyAmbient(tidy: true)
+    }
+
+    private func applyAmbient(tidy: Bool) {
+        let before = ambient
+        if let v = Double(airTempField.stringValue.replacingOccurrences(of: ",", with: ".")) {
+            ambient.airTemp = max(-40, min(80, v))
+        }
+        if let v = Double(humidityField.stringValue.replacingOccurrences(of: ",", with: ".")) {
+            ambient.humidity = max(1, min(100, v))
+        }
+        // Reflected temperature is not asked for separately: for the ordinary
+        // indoor case it is the air temperature, and a wrong guess here does
+        // less harm than another box to fill in.
+        ambient.reflectedTemp = ambient.airTemp
+        if tidy {
+            airTempField.stringValue = String(format: "%.0f", ambient.airTemp)
+            humidityField.stringValue = String(format: "%.0f", ambient.humidity)
+        }
+        guard ambient != before else { return }
+        setCaptureStatus(String(format: "Air %.0f\u{00B0}C at %.0f%% humidity \u{2014} dew point %.1f\u{00B0}C.",
+                                ambient.airTemp, ambient.humidity, ambient.dewPoint))
+    }
+
+    @objc func toggleDewPoint(_ sender: Any?) {
+        showDewPoint.toggle()
+        dewPointToggle.state = showDewPoint ? .on : .off
+        setCaptureStatus(showDewPoint
+            ? String(format: "Damp risk on. Anything at or below %.1f\u{00B0}C is painted "
+                     + "\u{2014} dew point %.1f\u{00B0}C plus a %.0f\u{00B0} margin.",
+                     ambient.dewPoint + dewPointMargin, ambient.dewPoint, dewPointMargin)
+            : "Damp risk off.")
+    }
+
+    @objc private func materialChosen(_ sender: NSPopUpButton) {
+        let index = sender.indexOfSelectedItem - 1     // 0 is the "Material…" prompt
+        guard index >= 0, index < Materials.all.count else { return }
+        emissivityField.stringValue = String(format: "%.2f", Materials.all[index].emissivity)
+        applyEmissivity(sender)
+        sender.selectItem(at: 0)
+    }
+
+    @objc private func referenceChanged(_ sender: NSPopUpButton) {
+        let row = table.selectedRow
+        guard measurements.items.indices.contains(row) else {
+            setCaptureStatus("Select a measurement in the list first.")
+            rebuildReferencePopup()
+            return
+        }
+        let title = sender.titleOfSelectedItem ?? ""
+        measurements.setReference(title == "nothing" ? nil : title, at: row)
+        setCaptureStatus(title == "nothing"
+            ? "\(measurements.items[row].name) is on its own again."
+            : "\(measurements.items[row].name) is now read as a difference against \(title).")
+    }
+
+    /// Everything that has to catch up after an object is added or removed.
+    /// The list of comparisons in particular must not go stale: it would
+    /// otherwise offer an object that no longer exists.
+    private func measurementsChanged() {
+        table.reloadData()
+        rebuildReferencePopup()
+        syncTrackButton()
+    }
+
+    /// The list of things the selected object can be compared against: the
+    /// air, or any other object. Rebuilt whenever the objects change, since a
+    /// stale list would offer something that no longer exists.
+    private func rebuildReferencePopup() {
+        let row = table.selectedRow
+        let selected = measurements.items.indices.contains(row) ? measurements.items[row] : nil
+        referencePopup.removeAllItems()
+        referencePopup.addItem(withTitle: "nothing")
+        referencePopup.addItem(withTitle: Measurement.airReference)
+        for m in measurements.items where m.name != selected?.name {
+            referencePopup.addItem(withTitle: m.name)
+        }
+        referencePopup.selectItem(withTitle: selected?.reference ?? "nothing")
+        referencePopup.isEnabled = selected != nil
+    }
 
     @objc private func linePointsChanged(_ sender: Any?) {
         applyLinePoints(tidy: true)
@@ -923,6 +1143,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             return virtualCam.isAvailable
         case #selector(toggleChangeDetection(_:)):
             item.state = detectChanges ? .on : .off
+        case #selector(toggleDewPoint(_:)):
+            item.state = showDewPoint ? .on : .off
         case #selector(selectDragTool(_:)):
             item.state = item.tag == dragTool.rawValue ? .on : .off
         case #selector(selectRange(_:)):
@@ -956,16 +1178,14 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         guard measurements.items.indices.contains(row) else { return }
         tracker.stop(measurements.items[row].name)
         measurements.remove(at: row)
-        table.reloadData()
-        syncTrackButton()
+        measurementsChanged()
     }
 
     @objc private func clearMeasurements(_ sender: Any?) {
         measurements.removeAll()
         tracker.stopAll()
         history.clear()
-        table.reloadData()
-        syncTrackButton()
+        measurementsChanged()
     }
 
     @objc private func applyEmissivity(_ sender: Any?) {
@@ -1302,6 +1522,7 @@ extension ThermalViewController: NSTableViewDataSource, NSTableViewDelegate {
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = table.selectedRow
         syncTrackButton()
+        rebuildReferencePopup()
         guard measurements.items.indices.contains(row) else {
             emissivityField.stringValue = ""
             return

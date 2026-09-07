@@ -102,6 +102,16 @@ struct ThermalRenderer {
         /// Alarm thresholds: pixels above/below are painted a flat colour.
         var isothermAbove: Double?
         var isothermBelow: Double?
+        /// Surfaces at or below this are painted as condensation risk. It is
+        /// the dew point plus whatever margin the user asked for, already
+        /// worked out; nil when the check is off.
+        var dewPointThreshold: Double?
+        /// The dew point itself, for the readout. Shown whenever the check is
+        /// on, because the number is worth seeing even where nothing is wet.
+        var dewPoint: Double?
+        /// Difference between an object and whatever it is compared against,
+        /// keyed by object name.
+        var deltas: [String: Double] = [:]
         var recordingNote: String?
         /// The three built-in markers are independently hideable: on a scene
         /// with user-placed objects they are mostly clutter, and the global
@@ -118,6 +128,9 @@ struct ThermalRenderer {
 
     private static let alarmHot = NSColor(calibratedRed: 1.0, green: 0.15, blue: 0.15, alpha: 1)
     private static let alarmCold = NSColor(calibratedRed: 0.2, green: 0.6, blue: 1.0, alpha: 1)
+    /// Deliberately unlike either alarm colour: condensation risk is a
+    /// different question from "too hot" or "too cold".
+    private static let dewRisk = NSColor(calibratedRed: 0.65, green: 0.35, blue: 1.0, alpha: 1)
 
     static func render(_ frame: Frame) -> CGImage? {
         let w = outputWidth, h = outputHeight
@@ -137,8 +150,15 @@ struct ThermalRenderer {
         let lut = frame.palette.lut
         var rgba = [UInt8](repeating: 255, count: imgW * imgH * 4)
         let hot = rgbComponents(alarmHot), cold = rgbComponents(alarmCold)
+        let damp = rgbComponents(dewRisk)
         for i in 0..<(imgW * imgH) {
             let t = frame.temperatures[i]
+            // Condensation risk goes on first: a surface that is about to get
+            // wet is the finding, and the user's own alarms should not hide it.
+            if let dew = frame.dewPointThreshold, t <= dew {
+                rgba[i * 4 + 0] = damp.0; rgba[i * 4 + 1] = damp.1; rgba[i * 4 + 2] = damp.2
+                continue
+            }
             if let above = frame.isothermAbove, t >= above {
                 rgba[i * 4 + 0] = hot.0; rgba[i * 4 + 1] = hot.1; rgba[i * 4 + 2] = hot.2
                 continue
@@ -186,7 +206,10 @@ struct ThermalRenderer {
         drawChanges(ctx, frame: frame, place: place)
         drawMeasurements(ctx, frame: frame, place: place)
 
-        let hud = "\(frame.palette.displayName)   \(frame.calibrationNote)"
+        var hud = "\(frame.palette.displayName)   \(frame.calibrationNote)"
+        if let dew = frame.dewPoint {
+            hud += String(format: "   dew point %.1fC", dew)
+        }
         draw(text: hud, in: ctx, at: CGPoint(x: u(10), y: u(8)), size: u(13), color: .systemYellow)
 
         if let note = frame.recordingNote {
@@ -263,7 +286,8 @@ struct ThermalRenderer {
             let label = m.kind == .spot
                 ? String(format: "%@ %.1fC", m.name, r.average)
                 : String(format: "%@ %.1f/%.1f/%.1fC", m.name, r.minValue, r.average, r.maxValue)
-            let suffix = (m.emissivity.map { String(format: " e%.2f", $0) } ?? "")
+            let suffix = deltaSuffix(m, frame: frame)
+                + (m.emissivity.map { String(format: " e%.2f", $0) } ?? "")
                 + trackSuffix(m, frame: frame)
             draw(text: label + suffix, in: ctx,
                  at: CGPoint(x: rect.minX, y: rect.maxY + u(3)), size: u(12),
@@ -329,6 +353,13 @@ struct ThermalRenderer {
     private static func trackSuffix(_ m: Measurement, frame: Frame) -> String {
         guard m.tracked else { return "" }
         return frame.lostTracks.contains(m.name) ? "  track lost" : "  track"
+    }
+
+    /// The difference against whatever this object is compared with, named so
+    /// the reading is not ambiguous: "Δ+24.1 vs Sp2" says what it is against.
+    private static func deltaSuffix(_ m: Measurement, frame: Frame) -> String {
+        guard let reference = m.reference, let delta = frame.deltas[m.name] else { return "" }
+        return String(format: "  \u{0394}%+.1f vs %@", delta, reference)
     }
 
     /// Small trend plot beside a measurement, normalised to its own range so a

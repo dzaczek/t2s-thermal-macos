@@ -32,6 +32,17 @@ struct Measurement: Equatable {
     /// Sticky: the object follows what it was placed on instead of staying
     /// pinned to a fixed set of pixels. See ObjectTracker.
     var tracked: Bool = false
+    /// What this object is compared against, by name, or `airReference`.
+    ///
+    /// A difference is what an electrical inspection actually turns on: a
+    /// terminal at 60C means nothing until you know the identical terminal
+    /// beside it is at 35C. Absolute temperature depends on load, weather and
+    /// emissivity; the difference between two like things mostly does not.
+    var reference: String?
+
+    /// Stands in for the air temperature rather than another object. Objects
+    /// are named Sp1/Ar1/Li1, so this cannot collide with one.
+    static let airReference = "Air"
 
     var name: String {
         switch kind {
@@ -320,7 +331,13 @@ final class MeasurementStore {
 
     func remove(at index: Int) {
         guard items.indices.contains(index) else { return }
+        let gone = items[index].name
         items.remove(at: index)
+        // Anything that was being compared against it has nothing to compare
+        // against any more.
+        for i in items.indices where items[i].reference == gone {
+            items[i].reference = nil
+        }
     }
 
     func removeAll() {
@@ -338,6 +355,32 @@ final class MeasurementStore {
     func setTracked(_ on: Bool, at index: Int) {
         guard items.indices.contains(index) else { return }
         items[index].tracked = on
+    }
+
+    func setReference(_ name: String?, at index: Int) {
+        guard items.indices.contains(index) else { return }
+        items[index].reference = name
+    }
+
+    /// Differences of each object against whatever it is compared with.
+    /// Keyed by object name; objects with no reference are absent.
+    static func deltas(from results: [(Measurement, MeasurementResult)],
+                       airTemp: Double) -> [String: Double] {
+        var averages: [String: Double] = [:]
+        for (m, r) in results { averages[m.name] = r.average }
+
+        var out: [String: Double] = [:]
+        for (m, r) in results {
+            guard let reference = m.reference else { continue }
+            if reference == Measurement.airReference {
+                out[m.name] = r.average - airTemp
+            } else if let other = averages[reference] {
+                out[m.name] = r.average - other
+            }
+            // A reference that has since been deleted simply drops out, which
+            // is better than reporting a difference against nothing.
+        }
+        return out
     }
 
     func index(ofName name: String) -> Int? {
