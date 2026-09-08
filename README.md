@@ -1,5 +1,7 @@
 # T2S+ Thermal Camera for macOS
 
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-FFDD00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/dzaczek)
+
 ![The app: toolbar, a line profile with its markers, measurement areas with inline trend plots, and the side panel](docs/app.png)
 
 The Xinfrared T2S+ is a decent little thermal camera that ships with no Mac
