@@ -25,6 +25,10 @@ calibration** — see
 
 ## From raw counts to temperature
 
+The Swift decoder is checked against the vendored Python implementation with
+synthetic frames. See [algorithm validation](algorithm-validation.md) for the
+test coverage, measured numerical differences and physical accuracy limits.
+
 The camera is a UVC device, but it does not behave like a webcam.
 
 **1. It streams raw sensor counts, not a picture.** Put into raw mode, each

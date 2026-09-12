@@ -29,6 +29,7 @@ build/
 # Xcode path, signing team, notarisation profile. Local by design so that
 # nobody's paths or credentials reach the repository.
 build.config
+LocalBuild.xcconfig
 
 # Per-machine build counter, bumped on every build.
 build_number.txt

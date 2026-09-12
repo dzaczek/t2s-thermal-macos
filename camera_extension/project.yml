@@ -5,6 +5,11 @@ options:
     macOS: "14.0"
   createIntermediateGroups: true
 
+# Both targets use the same release version and local build counter.
+configFiles:
+  Debug: Version.xcconfig
+  Release: Version.xcconfig
+
 settings:
   base:
     CODE_SIGN_STYLE: Automatic
@@ -12,14 +17,14 @@ settings:
     MACOSX_DEPLOYMENT_TARGET: "14.0"
     ENABLE_HARDENED_RUNTIME: YES
     GENERATE_INFOPLIST_FILE: YES
-    # System Extensions are version-tracked by macOS (OSSystemExtensionProperties
-    # exposes bundleShortVersion/bundleVersion, and replacement decisions compare
-    # them). Without these, the built Info.plist had no CFBundleVersion /
-    # CFBundleShortVersionString at all and activation failed with "Unable to
-    # find any matched extension" -- confirmed by diffing against a working
-    # camera extension already installed on this machine.
-    MARKETING_VERSION: "1.3"
-    CURRENT_PROJECT_VERSION: "1"
+
+schemes:
+  T2SCameraApp:
+    build:
+      targets:
+        T2SCameraApp: all
+    run:
+      config: Release
 
 targets:
   T2SCameraApp:
@@ -28,6 +33,8 @@ targets:
     sources:
       - path: T2SCameraApp
       - path: Shared
+      - path: ../LICENSE
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cat.sysop.t2scamera

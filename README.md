@@ -64,9 +64,14 @@ This hardware revision reports a shutter temperature that is unusable, so the
 app solves for the correction instead of trusting it. Aim the centre crosshair
 at something whose temperature you actually know and press **⌘K**.
 
-Skip this and the picture is still right, but the numbers on it are not. The
-value is saved, so it is genuinely a one-off per camera. Do not copy it between
-cameras: it belongs to the unit it was solved on.
+Use a large, uniform surface and an independently measured surface temperature.
+A forehead is not a known 36°C reference, and a shiny pot wall does not measure
+like the water inside it. For two references, use surfaces with similar high
+emissivity; a bad pair stretches the readings of the entire scene.
+
+The value is saved per measurement range and camera conditions can change, so
+check it after warm-up against a known reference. Do not copy it between cameras.
+See [calibration guidance](docs/using.md#calibrating-the-native-app).
 
 ## What you need
 

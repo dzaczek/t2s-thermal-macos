@@ -140,11 +140,22 @@ struct ThermalDecoder {
                                  emissivity: Double? = nil,
                                  range: Range = .normal,
                                  scale: Double = 1.0, bias: Double = 0.0) -> [Double]? {
+        let emis = emissivity ?? meta.emissivity
+        // Reject broken metadata before doing arithmetic. NaN comparisons do
+        // not behave like zero checks, and used to produce plausible numbers
+        // or an artificial absolute-zero floor instead of a missing reading.
+        guard [meta.cal00, meta.cal01, meta.cal02, meta.cal03, meta.cal04, meta.cal05,
+               meta.correction, meta.reflectedTemp, meta.airTemp, meta.humidity,
+               meta.distance, emis, shutterOffset, userOffset, scale, bias]
+                .allSatisfy({ $0.isFinite }),
+              meta.cal01 != 0, emis > 0, emis <= 1,
+              meta.humidity >= 0, meta.humidity <= 1, meta.distance >= 0,
+              meta.airTemp > -zeroC, meta.reflectedTemp > -zeroC,
+              scale > 0 else { return nil }
         let fpaTemp = 20.0 - (Double(meta.fpaRaw) - fpaOffset) / fpaDivisor
         let ts = shutterOffset
         let distance = min(meta.distance, 20.0)
         let atm = atmosphericTransmittance(meta.humidity, meta.airTemp, distance)
-        let emis = emissivity ?? meta.emissivity
 
         let numeratorSub = (1.0 - emis) * atm * pow(meta.reflectedTemp + zeroC, 4)
             + (1.0 - atm) * pow(meta.airTemp + zeroC, 4)
@@ -161,20 +172,24 @@ struct ThermalDecoder {
             : 0
         let tableOffset = meta.cal00 - Double(cal00Corr > 0 ? cal00Corr : 0)
 
-        guard meta.cal01 != 0, denominator != 0 else { return nil }
-        var table = [Double](repeating: 0, count: tableSize)
+        guard atm.isFinite, atm > 0, denominator.isFinite, denominator > 0,
+              [numeratorSub, calA, calB, calC, calD].allSatisfy({ $0.isFinite })
+        else { return nil }
+        // Not every possible ADC count has a temperature under the supplied
+        // emissivity/reflection settings. Keep those entries invalid; callers
+        // must check the values actually used by the frame or measurement.
+        var table = [Double](repeating: .nan, count: tableSize)
 
         for i in 0..<tableSize {
             var n = ((Double(i) - tableOffset) * calD + calC) / meta.cal01 + calB
             n = sqrt(abs(n))
-            if n.isNaN { n = 0 }
+            guard n.isFinite else { continue }
             let wtot = pow(n - calA + zeroC, 4)
             let inner = (wtot - numeratorSub) / denominator
-            // Fourth root of a negative is NaN; clamp rather than propagate,
-            // otherwise a slice of the table poisons min/max lookups.
-            var t = inner > 0 ? pow(inner, 0.25) - zeroC : -zeroC
+            guard inner.isFinite, inner > 0 else { continue }
+            var t = pow(inner, 0.25) - zeroC
             t = t + (distance * 0.85 - 1.125) * (t - meta.airTemp) / 100.0 + meta.correction
-            table[i] = scale * (t + userOffset) + bias
+            table[i] = scale * t + bias + userOffset
         }
         return table
     }

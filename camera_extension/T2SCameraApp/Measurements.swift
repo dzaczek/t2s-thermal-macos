@@ -114,6 +114,8 @@ struct MeasurementResult {
 
     static let zero = MeasurementResult(minValue: 0, maxValue: 0, average: 0,
                                         minIndex: 0, maxIndex: 0)
+    static let invalid = MeasurementResult(minValue: .nan, maxValue: .nan, average: .nan,
+                                          minIndex: 0, maxIndex: 0)
 }
 
 enum MeasurementEngine {
@@ -142,6 +144,7 @@ enum MeasurementEngine {
                 let i = py * width + px
                 guard i < temps.count else { continue }
                 let t = temps[i]
+                guard t.isFinite else { return .invalid }
                 if t < lo { lo = t; loIdx = i }
                 if t > hi { hi = t; hiIdx = i }
                 sum += t
@@ -161,6 +164,7 @@ enum MeasurementEngine {
         guard !pixels.isEmpty else { return .zero }
 
         let values = pixels.map { $0 < temps.count ? temps[$0] : 0 }
+        guard values.allSatisfy({ $0.isFinite }) else { return .invalid }
         var lo = Double.greatestFiniteMagnitude, hi = -Double.greatestFiniteMagnitude
         var loIdx = pixels[0], hiIdx = pixels[0]
         var sum = 0.0

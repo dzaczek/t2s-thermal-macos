@@ -1,0 +1,37 @@
+T2S+ Thermal Camera — third-party notices
+
+This application is distributed under GNU GPL version 3; see the accompanying
+LICENSE file. Corresponding source and build instructions for each release:
+https://github.com/dzaczek/t2s-thermal-macos/releases
+
+The Swift temperature model is adapted from IR-Py-Thermal by diminDDL and its
+contributors, derived from stawel/ht301_hacklib (GNU GPL version 3).
+https://github.com/diminDDL/IR-Py-Thermal
+https://github.com/stawel/ht301_hacklib
+Changes in this application include the Swift port, calibration, and validation
+of sensor data. See the source repository history and docs/algorithm-validation.md.
+
+USB control was informed by uvc-util, by Jeffrey Frey:
+https://github.com/jtfrey/uvc-util
+
+The MIT License (MIT)
+
+Copyright (c) 2016 Jeffrey Frey
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

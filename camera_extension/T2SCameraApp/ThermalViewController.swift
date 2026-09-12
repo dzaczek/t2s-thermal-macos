@@ -121,9 +121,9 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private var lineModeControl = NSSegmentedControl()
     private var panelView = NSView()
 
-    /// Latest decoded frame, kept so calibration and capture can act on it.
-    private var lastCenterRaw: Double = 0
-    private var lastMeta: ThermalDecoder.Metadata?
+    /// Kept together under frameLock so calibration cannot mix two frames.
+    private var lastCalibrationSample: Calibration.Sample?
+    private var lastCalibrationTime = Date.distantPast
 
     /// Written on the capture queue, read on the main queue by the save
     /// actions and the interval timer, so both go through this lock.
@@ -511,6 +511,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
 
     private func handle(raw: [UInt16]) {
         guard !nucInProgress else { return }
+        guard raw.count == ThermalCapture.width * ThermalCapture.fullHeight else { return }
         let tStart = CFAbsoluteTimeGetCurrent()
         Profile.shared.frameArrived()
         let W = ThermalCapture.width, H = ThermalCapture.imageHeight
@@ -535,8 +536,15 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         guard let table = ThermalDecoder.temperatureTable(
                 meta: meta, shutterOffset: calibration.shutterOffset,
                 range: measurementRange,
-                scale: calibration.scale, bias: calibration.bias) else { return }
+                scale: calibration.scale, bias: calibration.bias) else {
+            rejectTemperatureFrame()
+            return
+        }
         let temps = lookup(smoothed, in: table)
+        guard temps.allSatisfy({ $0.isFinite }) else {
+            rejectTemperatureFrame()
+            return
+        }
 
         let extremes = ThermalProcessor.extremes(temps)
         let centerIndex = (fh / 2) * fw + fw / 2
@@ -553,11 +561,20 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
                     scale: calibration.scale, bias: calibration.bias) else { continue }
             perEmissivity[e] = lookup(smoothed, in: t)
         }
-        let results: [(Measurement, MeasurementResult)] = items.map { m in
-            let source = m.emissivity.flatMap { perEmissivity[$0] } ?? temps
-            return (m, MeasurementEngine.evaluate(m, temps: source, width: fw, height: fh,
+        let results: [(Measurement, MeasurementResult)] = items.compactMap { m in
+            let source: [Double]
+            if let e = m.emissivity {
+                // A failed override must not silently fall back to a different
+                // material's emissivity. Invalid measurements remain absent.
+                guard let adjusted = perEmissivity[e] else { return nil }
+                source = adjusted
+            } else { source = temps }
+            let result = MeasurementEngine.evaluate(m, temps: source, width: fw, height: fh,
                                                   lineExtremeCount: lineExtremeCount,
-                                                  lineExtremeMode: lineExtremeMode))
+                                                  lineExtremeMode: lineExtremeMode)
+            guard result.average.isFinite, result.minValue.isFinite, result.maxValue.isFinite
+            else { return nil }
+            return (m, result)
         }
 
         // Sticky objects. Seeding and following both happen here, on the
@@ -660,9 +677,9 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         guard let image = ThermalRenderer.render(frame) else { return }
         let tRendered = CFAbsoluteTimeGetCurrent()
 
-        lastCenterRaw = smoothed[centerIndex]
-        lastMeta = meta
         frameLock.lock()
+        lastCalibrationSample = Calibration.Sample(raw: smoothed[centerIndex], meta: meta)
+        lastCalibrationTime = Date()
         lastImage = image
         lastTemps = temps
         lastResults = results
@@ -1099,25 +1116,54 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
 
     // MARK: - Calibration
 
+    private func rejectTemperatureFrame() {
+        frameLock.lock()
+        lastCalibrationSample = nil
+        lastImage = nil
+        lastTemps = []
+        lastResults = []
+        lastLogRow = [:]
+        frameLock.unlock()
+        setStatus("Temperature unavailable: invalid sensor data or measurement parameters.")
+    }
+
+    private func calibrationSample() -> Calibration.Sample? {
+        frameLock.lock()
+        defer { frameLock.unlock() }
+        guard Date().timeIntervalSince(lastCalibrationTime) < 2 else { return nil }
+        return lastCalibrationSample
+    }
+
     @objc func calibrateTemperature(_ sender: Any?) {
-        guard let meta = lastMeta else { return }
+        guard calibrationSample() != nil else { return }
         let alert = NSAlert()
         alert.messageText = "Calibrate against a known temperature"
-        alert.informativeText = "Point the centre crosshair at something whose real temperature "
-            + "you know, then enter that temperature. Everything else is scaled from this point."
+        alert.informativeText = "Aim at a large, uniform, matte surface whose temperature you "
+            + "have measured independently. Keep aiming there when you click Calibrate. "
+            + "Do not assume a forehead is 36C or a metal pot is at the water temperature. "
+            + "This adjusts the whole scene and keeps any existing two-point scale."
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 80, height: 24))
         field.stringValue = String(format: "%.1f", referenceTemp)
         alert.accessoryView = field
         alert.addButton(withTitle: "Calibrate")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn,
-              let known = Double(field.stringValue.replacingOccurrences(of: ",", with: ".")) else { return }
+              let known = Double(field.stringValue.replacingOccurrences(of: ",", with: ".")),
+              known.isFinite,
+              let sample = calibrationSample() else { return }
 
-        calibration.shutterOffset = Calibration.solveShutterOffset(
+        let offset = Calibration.solveShutterOffset(
             startingAt: calibration.shutterOffset, knownTemp: known,
-            centerRaw: lastCenterRaw, meta: meta,
+            centerRaw: sample.raw, meta: sample.meta,
             range: measurementRange,
             scale: calibration.scale, bias: calibration.bias)
+        guard offset.isFinite,
+              let model = sample.modelTemperature(shutterOffset: offset, range: measurementRange),
+              abs(calibration.scale * model + calibration.bias - known) < 0.1 else {
+            setStatus("Calibration did not converge. Check the reference temperature and try again.")
+            return
+        }
+        calibration.shutterOffset = offset
         referenceTemp = known
         calibration.markCalibrated()
         setStatus(String(format: "Calibrated: centre = %.1fC (shutter offset %.2f)",
@@ -1131,63 +1177,43 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     /// the wrong *span* as well, and nothing you do to a single offset will
     /// stretch it, so two points are needed: they give scale and bias exactly.
     @objc func calibrateTwoPoint(_ sender: Any?) {
-        guard let meta = lastMeta else { return }
+        guard calibrationSample() != nil else { return }
 
-        func ask(_ which: String, _ hint: String) -> (raw: Double, temp: Double)? {
+        func ask(_ which: String, _ hint: String) -> (sample: Calibration.Sample, temp: Double)? {
             let alert = NSAlert()
             alert.messageText = "Two-point calibration: \(which) reference"
             alert.informativeText = hint + "\n\nAim the centre crosshair at it, hold "
-                + "steady, then type its real temperature."
+                + "steady, then type its independently measured surface temperature. "
+                + "Keep aiming there when you click Use this. Avoid bare metal and "
+                + "assumed forehead temperatures; both references need similar, high emissivity."
             let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 90, height: 24))
             alert.accessoryView = field
             alert.addButton(withTitle: "Use this")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn,
-                  let t = Double(field.stringValue.replacingOccurrences(of: ",", with: "."))
+                  let t = Double(field.stringValue.replacingOccurrences(of: ",", with: ".")),
+                  t.isFinite, let sample = calibrationSample()
             else { return nil }
-            return (lastCenterRaw, t)
+            return (sample, t)
         }
 
         guard let cold = ask("cooler", "Something around room temperature works well.") else { return }
         guard let hot = ask("warmer", "The wider apart the two are, the better the fit.") else { return }
 
-        guard abs(hot.temp - cold.temp) >= 5 else {
-            setStatus("Those two temperatures are within 5C of each other. The fit "
-                      + "needs them far apart, and entering the same value twice "
-                      + "would flatten the whole image to one temperature.")
+        guard hot.temp - cold.temp >= 5 else {
+            setStatus("The warmer reference must be at least 5C above the cooler reference.")
             return
         }
-        guard abs(hot.raw - cold.raw) > 1 else {
-            setStatus("Both readings came from the same sensor value. Aim at two "
-                      + "genuinely different temperatures.")
+        guard let fit = Calibration.twoPointFit(
+            cold: cold.sample, coldTemp: cold.temp, hot: hot.sample, hotTemp: hot.temp,
+            shutterOffset: calibration.shutterOffset, range: measurementRange) else {
+            setStatus("Cannot fit these references: model readings must increase from cool "
+                      + "to warm. Check the targets and let the camera settle, then try again.")
             return
         }
-
-        // Model output with the correction removed, then fit a*model + b.
-        guard let plain = ThermalDecoder.temperatureTable(
-                meta: meta, shutterOffset: calibration.shutterOffset,
-                range: measurementRange, scale: 1.0, bias: 0.0) else { return }
-        let index = { (r: Double) -> Int in
-            Int(max(0, min(Double(ThermalDecoder.tableSize - 1), r.rounded())))
-        }
-        let mCold = plain[index(cold.raw)], mHot = plain[index(hot.raw)]
-        guard abs(mHot - mCold) > 1e-6 else {
-            setStatus("The model gives both points the same temperature; cannot fit.")
-            return
-        }
-        let a = (hot.temp - cold.temp) / (mHot - mCold)
-        let b = cold.temp - a * mCold
-        // A degenerate fit flattens every pixel to one value, which looks like
-        // the camera has died. Refuse it rather than store it.
-        guard a.isFinite, b.isFinite, a > 1e-4 else {
-            setStatus(String(format: "That fit came out degenerate (scale %.5f) and "
-                             + "would show a single flat temperature, so it was not "
-                             + "saved. Try two references further apart.", a))
-            return
-        }
-        calibration.setTwoPoint(scale: a, bias: b)
+        calibration.setTwoPoint(scale: fit.scale, bias: fit.bias)
         setStatus(String(format: "Two-point calibration: scale %.4f, bias %.1f "
-                         + "(from %.1fC and %.1fC).", a, b, cold.temp, hot.temp))
+                         + "(from %.1fC and %.1fC).", fit.scale, fit.bias, cold.temp, hot.temp))
     }
 
     /// Closes the shutter, waits for the signal to actually go flat, averages

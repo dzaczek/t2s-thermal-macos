@@ -44,7 +44,21 @@ enum About {
         line("Credits\n", bold)
         line("Radiometry ported from IR-Py-Thermal (GPLv3) by diminDDL, which "
              + "reverse-engineered this camera family's temperature model. "
-             + "USB control via uvc-util (MIT).\n")
+             + "USB control informed by uvc-util (MIT).\n\n")
+        line("Licence\n", bold)
+        line("GNU GPL v3. This program comes without warranty.\n")
+        for (title, url) in [
+            ("Source code and build instructions", URL(string:
+                "https://github.com/dzaczek/t2s-thermal-macos/tree/v\(version)")),
+            ("GNU GPL v3", Bundle.main.url(forResource: "LICENSE", withExtension: nil)),
+            ("Third-party notices", Bundle.main.url(forResource: "ThirdPartyNotices", withExtension: "txt"))
+        ] {
+            if let url {
+                credits.append(NSAttributedString(string: title + "\n", attributes: [
+                    .font: NSFont.systemFont(ofSize: 11), .link: url
+                ]))
+            }
+        }
 
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "T2S+ Thermal Camera",

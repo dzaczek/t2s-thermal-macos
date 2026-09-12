@@ -3,6 +3,37 @@ import Foundation
 /// Flat-field (NUC) correction and the shutter-offset solve.
 final class Calibration {
 
+    /// Raw count and metadata must come from the same frame. Metadata (notably
+    /// FPA temperature and cal00) can change while the user aims at a reference.
+    struct Sample {
+        let raw: Double
+        let meta: ThermalDecoder.Metadata
+
+        func modelTemperature(shutterOffset: Double, range: ThermalDecoder.Range) -> Double? {
+            guard raw.isFinite,
+                  let table = ThermalDecoder.temperatureTable(
+                    meta: meta, shutterOffset: shutterOffset, range: range) else { return nil }
+            let index = Int(max(0, min(Double(ThermalDecoder.tableSize - 1), raw.rounded())))
+            let value = table[index]
+            return value.isFinite ? value : nil
+        }
+    }
+
+    /// Fit uncorrected model temperatures, each evaluated with its own frame's
+    /// metadata. Raw counts from different frames are not directly comparable.
+    static func twoPointFit(cold: Sample, coldTemp: Double, hot: Sample, hotTemp: Double,
+                            shutterOffset: Double, range: ThermalDecoder.Range)
+        -> (scale: Double, bias: Double)? {
+        guard coldTemp.isFinite, hotTemp.isFinite, hotTemp - coldTemp >= 5,
+              let mCold = cold.modelTemperature(shutterOffset: shutterOffset, range: range),
+              let mHot = hot.modelTemperature(shutterOffset: shutterOffset, range: range),
+              mHot - mCold > 1e-6 else { return nil }
+        let scale = (hotTemp - coldTemp) / (mHot - mCold)
+        let bias = coldTemp - scale * mCold
+        guard scale.isFinite, bias.isFinite, scale > 1e-4 else { return nil }
+        return (scale, bias)
+    }
+
     /// Per-pixel shutter-closed reference; corrected = raw - reference + mean.
     private(set) var reference: [Double]?
     private(set) var referenceMean: Double = 0
@@ -77,6 +108,7 @@ final class Calibration {
 
     /// True when the offset came from an actual calibration rather than the guess.
     var isCalibrated: Bool = Calibration.loadShutterOffset(for: .normal) != nil
+        || Calibration.loadPair(for: .normal) != nil
 
     func markCalibrated() { isCalibrated = true }
 
@@ -109,7 +141,8 @@ final class Calibration {
     private static func loadPair(for range: ThermalDecoder.Range) -> (scale: Double, bias: Double)? {
         let all = stored()
         guard let s = all[key(for: range) + "_scale"],
-              let b = all[key(for: range) + "_bias"] else { return nil }
+              let b = all[key(for: range) + "_bias"],
+              s.isFinite, b.isFinite, s > 1e-4 else { return nil }
         return (s, b)
     }
 
@@ -167,7 +200,7 @@ final class Calibration {
     /// the signal had gone flat.
     func buildReference(from frames: [[UInt16]]) -> (deadCount: Int, applied: Bool) {
         let count = ThermalCapture.width * ThermalCapture.imageHeight
-        guard !frames.isEmpty else { return (0, false) }
+        guard !frames.isEmpty, frames.allSatisfy({ $0.count >= count }) else { return (0, false) }
 
         var mean = [Double](repeating: 0, count: count)
         for frame in frames {
@@ -228,6 +261,9 @@ final class Calibration {
                                    range: ThermalDecoder.Range = .normal,
                                    scale: Double = 1.0, bias: Double = 0.0,
                                    maxIterations: Int = 8, tolerance: Double = 0.05) -> Double {
+        guard offset.isFinite, knownTemp.isFinite, centerRaw.isFinite,
+              scale.isFinite, scale > 0, bias.isFinite, maxIterations > 0
+        else { return offset }
         var current = offset
         let probeStep = 5.0
         let index = Int(max(0, min(Double(ThermalDecoder.tableSize - 1), centerRaw.rounded())))
@@ -242,9 +278,11 @@ final class Calibration {
                     range: range, scale: scale, bias: bias)
             else { return current }
             let value = table[index]
+            guard value.isFinite else { return current }
             if abs(value - knownTemp) < tolerance { break }
 
             let probed = probedTable[index]
+            guard probed.isFinite else { return current }
             var slope = (probed - value) / probeStep
             if abs(slope) < 0.05 { slope = 1.0 }
             current += (knownTemp - value) / slope

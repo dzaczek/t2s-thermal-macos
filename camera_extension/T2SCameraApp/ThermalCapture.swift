@@ -116,6 +116,10 @@ final class ThermalCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         let height = CVPixelBufferGetHeight(pixels)
         let bytesPerRow = CVPixelBufferGetBytesPerRow(pixels)
+        guard CVPixelBufferGetWidth(pixels) == Self.width,
+              height == Self.fullHeight, bytesPerRow >= Self.width * 2,
+              CVPixelBufferGetPixelFormatType(pixels) == kCVPixelFormatType_422YpCbCr8_yuvs
+        else { return }
         guard let base = CVPixelBufferGetBaseAddress(pixels) else { return }
 
         // Copy out row by row: bytesPerRow can exceed width*2 if the buffer is

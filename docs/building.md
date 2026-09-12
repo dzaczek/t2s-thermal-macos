@@ -32,13 +32,38 @@ runtime from the build's own code signature (`Shared/AppIdentity.swift`).
 ```bash
 xcrun notarytool store-credentials T2SCamera \
   --apple-id you@example.com --team-id XXXXXXXXXX --password <app-specific-password>
+```
+
+Set `T2S_NOTARY_PROFILE=T2SCamera` in `camera_extension/build.config`, then run
+`./build.sh --release` to produce the signed, notarised disk image.
 
 ### Version and build number
 
-`MARKETING_VERSION` in `project.yml` is the version; the build number is a
-counter in `camera_extension/build_number.txt` that `build.sh` bumps on every
-build and passes to xcodebuild. Both show in the window title and in
-**About T2S+ Thermal Camera**.
+`camera_extension/Version.xcconfig` defines the release version and
+minimum build number for both the app and extension. `build.sh` chooses a
+number above both the local counter and the app installed in `/Applications`.
+It writes `build_number.txt` and `LocalBuild.xcconfig` (both git-ignored).
+Xcode reads that same configuration, including the local signing team, so its
+build does not revert to version 1.2 or build 1. Both numbers appear in About.
+
+### Working in Xcode
+
+From the repository root:
+
+```bash
+./build.sh --prepare
+open camera_extension/T2SCamera.xcodeproj
+```
+
+Select the **T2SCameraApp** scheme; Run uses Release for thermal processing
+performance. `--prepare` reserves the next build number and regenerates the
+project without installing. Repeated builds inside Xcode keep that number.
+Edit `Version.xcconfig` to change the release version; `project.yml` owns the
+project structure, so manual edits to the generated project can be overwritten.
+
+To build, install and launch the next build in `/Applications`, run
+`./build.sh --run`. Xcode's Run launches its build copy; it does not replace
+the installed app. Camera extension activation must use the installed copy.
 
 ### Performance
 

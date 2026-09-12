@@ -222,6 +222,47 @@ for the same physical quantity, but the value that comes out depends on the
 camera state at the moment you calibrate, so a number solved in one is not
 meaningful in the other -- calibrate the Swift app once with ⌘K instead.
 
+### Choosing references and checking the result
+
+Use an independently measured **surface** temperature. A forehead is not a
+known 36°C reference: the camera sees skin or hair, not internal body
+temperature. A shiny metal pot wall reflects its surroundings and can read
+much colder than the water inside. Water and skin have high emissivity, while
+bare shiny metal behaves very differently; see
+[FLIR's explanation of emissivity](https://www.flir.com/en-ca/discover/professional-tools/how-does-emissivity-affect-thermal-imaging/).
+
+For a practical check in the normal range (−20 to 120°C):
+
+1. Let the camera warm up until the readings settle, then run **Recalibrate Sensor**.
+2. If a previous pair spoiled the scene, use **Reset Calibration for This Range**.
+3. Use room-temperature and warm water as two references, measuring their
+   temperatures with a contact thermometer. Aim at the water surface, away
+   from the rim, at a near-perpendicular angle. Stir before measuring and
+   recheck the temperature as the warm water cools. The water patch must fill
+   substantially more than the 5×5-pixel smoothing footprint around the centre.
+4. Check a third, independently measured reference between the two, and one
+   near the lowest temperature you intend to measure. Matching the two fitted
+   points alone does not demonstrate accuracy elsewhere.
+
+The app starts with global emissivity 0.95, distance 1 m, and air/reflected
+temperature 20°C. These are assumptions, not measurements. Per-object
+emissivity changes that object's readout, but **does not change the centre
+crosshair used for calibration**. Do not compensate for one shiny object's
+emissivity by stretching the whole scene's calibration.
+
+Two-point correction is `displayed = scale × model + bias`. For example,
+mapping existing readings 36→36°C and 60→90°C gives `2.25 × reading − 45`:
+20°C becomes 0°C and 18°C becomes −4.5°C. This is correct arithmetic for an
+unsuitable pair of references, not evidence that the room is freezing.
+Colour is also relative when auto-range is on: dark means the colder end of
+the current palette, not a known room temperature.
+
+Each reference now uses raw counts and metadata captured together when its
+dialog is confirmed. Previously, the metadata was taken before opening the
+first dialog and reused for later samples, so sensor drift or a metadata
+update could distort the fitted scale. Existing stored fits are not repaired
+automatically; reset and measure them again.
+
 ## Measurement range
 
 The camera has two hardware ranges, **−20 to 120 °C** and **−20 to 450 °C**,
@@ -255,8 +296,10 @@ wrong number is safer than a plausible wrong one.
 **Camera ▸ Calibrate with Two References…** measures it. Aim the crosshair at
 something cool, type its temperature, then at something hot and type that. Two
 points fix the scale and the offset exactly, and the result is stored for that
-range. A pot of just-boiled water and a forehead work well: far apart and easy
-to check.
+range. Use independently measured surfaces with similar high emissivity;
+see the reference procedure above. Do not use guessed forehead or pot-wall
+temperatures. The fit is an empirical correction; accuracy outside the two
+references requires separate checking.
 
 The two temperatures have to be at least 5 °C apart. Entering the same value
 twice fits a horizontal line, which renders every pixel as one flat temperature
