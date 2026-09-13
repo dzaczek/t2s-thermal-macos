@@ -23,17 +23,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.setContentSize(NSSize(width: ThermalViewController.contentWidth,
                                      height: ThermalViewController.contentHeight))
         // Below this the side panel and the control bar stop fitting.
-        window.contentMinSize = NSSize(width: ThermalViewController.panelWidth + 460, height: 420)
+        window.contentMinSize = NSSize(width: 1100, height: 740)
         // Quick access to the settings that get changed constantly. The menu
         // still holds everything, but a toolbar is one click and, sitting in
         // the title bar, costs the video area nothing.
-        let toolbar = NSToolbar(identifier: "T2SCameraToolbar")
+        let toolbar = NSToolbar(identifier: "T2SCameraWorkspaceToolbar")
         toolbar.delegate = thermalController
         toolbar.displayMode = .iconAndLabel
         toolbar.allowsUserCustomization = true
         toolbar.autosavesConfiguration = true
         window.toolbar = toolbar
         window.toolbarStyle = .unified
+
+        if let screen = window.screen ?? NSScreen.main {
+            window.setContentSize(NSSize(width: min(ThermalViewController.contentWidth, screen.visibleFrame.width - 30),
+                                         height: min(ThermalViewController.contentHeight, screen.visibleFrame.height - 100)))
+        }
 
         window.center()
         window.isReleasedWhenClosed = false
@@ -88,6 +93,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let cameraItem = NSMenuItem()
         let camera = NSMenu(title: "Camera")
+        item(camera, "Align RGB Camera… (Beta)", #selector(ThermalViewController.showRGBAlignment(_:)))
+        camera.addItem(.separator())
         item(camera, "Calibrate Temperature…",
              #selector(ThermalViewController.calibrateTemperature(_:)), "k")
         item(camera, "Calibrate with Two References…",

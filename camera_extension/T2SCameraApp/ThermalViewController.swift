@@ -3,14 +3,11 @@ import Cocoa
 /// The live thermal view, its measurement tools and the capture controls.
 final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTextFieldDelegate {
 
-    // Layout. The image keeps its native 858x576 render size; the panel on the
-    // right holds the measurement list and capture controls.
+    // Window geometry is independent of the shared renderer's output size.
     static let panelWidth: CGFloat = 300
-    private static let controlsHeight: CGFloat = 46
-    private static let statusHeight: CGFloat = 24
-    static var contentWidth: CGFloat { CGFloat(ThermalRenderer.displayWidth) + panelWidth }
+    static var contentWidth: CGFloat { 1380 }
     static var contentHeight: CGFloat {
-        CGFloat(ThermalRenderer.displayHeight) + controlsHeight + statusHeight
+        900
     }
 
     /// Content height for a given plot position; only the docked plots add
@@ -22,20 +19,22 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private let capture = ThermalCapture()
     private let calibration = Calibration()
     private let virtualCam = VirtualCameraFeed()
+    private let rgbCamera = VisibleCamera()
+    private var rgbPanel: RGBAlignmentPanel?
     private let measurements = MeasurementStore()
     let recorder = Recorder()
     private let history = TemperatureHistory()
 
     /// Where the live trend plot goes, if anywhere.
     enum ChartPosition: Int { case off, above, below, inline }
-    var chartPosition: ChartPosition = .off
+    var chartPosition: ChartPosition = .off { didSet { syncWorkspace(); layoutImageAndChart() } }
     private static let chartHeight: CGFloat = 170
 
-    var palette: Palette = .ironbow
+    var palette: Palette = .ironbow { didSet { syncWorkspace() } }
     private var referenceTemp = Calibration.defaultRoomTemp
-    var publishToVirtualCam = true
+    var publishToVirtualCam = true { didSet { syncWorkspace() } }
 
-    var manualRange = false
+    var manualRange = false { didSet { syncWorkspace() } }
     private var manualMin = 15.0
     private var manualMax = 40.0
     private var isothermAbove: Double?
@@ -43,12 +42,12 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
 
     /// The built-in readouts. Hiding one removes both its marker and its
     /// trace, so what is on screen is what is plotted and logged.
-    var showMax = true
-    var showMin = true
-    var showCentre = true
+    var showMax = true { didSet { syncWorkspace() } }
+    var showMin = true { didSet { syncWorkspace() } }
+    var showCentre = true { didSet { syncWorkspace() } }
 
     private let changeDetector = ChangeDetector()
-    var detectChanges = false
+    var detectChanges = false { didSet { syncWorkspace() } }
 
     /// Which measurement range the camera is in. Set explicitly at startup:
     /// the camera keeps whatever it was last put in, and decoding a frame
@@ -100,7 +99,6 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private var csvToggle = NSButton()
     private var captureStatus = NSTextField(labelWithString: "")
     private var chartView = ChartView()
-    private let controlBar = NSView()
 
     // Toolbar controls, populated as the toolbar builds them.
     weak var toolbarTool: NSSegmentedControl?
@@ -119,7 +117,18 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private var linePointsField = NSTextField()
     private var gestureHint = NSTextField(labelWithString: "")
     private var lineModeControl = NSSegmentedControl()
-    private var panelView = NSView()
+    private var workspace: NativeWorkspace?
+    private let workspacePalette = NSPopUpButton()
+    private let workspacePlot = NSPopUpButton()
+    private let workspaceRange = NSSegmentedControl()
+    private let workspaceMarkers = NSSegmentedControl()
+    private let workspaceHardwareRange = NSPopUpButton()
+    private var workspaceVirtual = NSButton()
+    private var workspaceChanges = NSButton()
+    private var workspaceTools = NSSegmentedControl()
+    private var quickVideo = NSButton()
+    private var quickInterval = NSButton()
+    private var quickLog = NSButton()
 
     /// Kept together under frameLock so calibration cannot mix two frames.
     private var lastCalibrationSample: Calibration.Sample?
@@ -138,6 +147,17 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     private var lastTableReload = Date.distantPast
 
     private var nucInProgress = false
+    private(set) var isIRRunning = false
+    /// Invalidates queued UI updates and a pending NUC when capture stops.
+    private var captureGeneration = UUID() // protected by frameLock
+    private let startsCapture: Bool
+
+    init(startsCapture: Bool = true) {
+        self.startsCapture = startsCapture
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0,
@@ -148,7 +168,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     override func viewDidLoad() {
         super.viewDidLoad()
         buildUI()
-        start()
+        if startsCapture { start() }
     }
 
     // MARK: - UI
@@ -166,16 +186,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             self?.measurements.addLine(x: x, y: y, x2: x2, y2: y2)
             self?.table.reloadData()
         }
-        view.addSubview(imageView)
-        view.addSubview(chartView)
-
-        buildControls()
-        buildPanel()
-
-        statusLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        statusLabel.textColor = .secondaryLabelColor
-        statusLabel.lineBreakMode = .byTruncatingTail
-        view.addSubview(statusLabel)
+        buildNativeWorkspace()
     }
 
     /// Single source of truth for geometry: every frame is derived from the
@@ -183,42 +194,34 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     /// the video the way fixed frames did.
     override func viewDidLayout() {
         super.viewDidLayout()
-        let b = view.bounds
-        let panelW = ThermalViewController.panelWidth
-        let mainW = max(320, b.width - panelW)
-
-        panelView.frame = NSRect(x: b.width - panelW, y: 0, width: panelW, height: b.height)
-
-        statusLabel.frame = NSRect(x: 12, y: 5, width: mainW - 24, height: 16)
-        controlBar.frame = NSRect(x: 0, y: ThermalViewController.statusHeight,
-                                  width: mainW, height: ThermalViewController.controlsHeight)
-
-        let top = ThermalViewController.statusHeight + ThermalViewController.controlsHeight
-        let free = max(0, b.height - top)
-
-        switch chartPosition {
-        case .off, .inline:
-            chartView.isHidden = true
-            imageView.frame = NSRect(x: 0, y: top, width: mainW, height: free)
-        case .below:
-            chartView.isHidden = false
-            let chartH = min(ThermalViewController.chartHeight, free * 0.4)
-            chartView.frame = NSRect(x: 0, y: top, width: mainW, height: chartH)
-            imageView.frame = NSRect(x: 0, y: top + chartH, width: mainW, height: free - chartH)
-        case .above:
-            chartView.isHidden = false
-            let chartH = min(ThermalViewController.chartHeight, free * 0.4)
-            imageView.frame = NSRect(x: 0, y: top, width: mainW, height: free - chartH)
-            chartView.frame = NSRect(x: 0, y: top + free - chartH, width: mainW, height: chartH)
-        }
+        workspace?.frame = view.bounds
+        workspace?.layoutSubtreeIfNeeded()
+        layoutImageAndChart()
     }
 
-    private func label(_ text: String, x: CGFloat, y: CGFloat, w: CGFloat = 70) -> NSTextField {
-        let l = NSTextField(labelWithString: text)
-        l.frame = NSRect(x: x, y: y, width: w, height: 17)
-        l.font = .systemFont(ofSize: 11)
-        l.textColor = .secondaryLabelColor
-        return l
+    private func layoutImageAndChart() {
+        guard let workspace else { return }
+        let b = workspace.imageHost.bounds
+        let mainW = b.width, free = b.height
+        let chartH = min(workspace.mode == .analysis ? 420 : 170,
+                         free * workspace.preferredChartFraction)
+        // Analysis adds a docked history view without disabling the user's
+        // inline plots or changing the plot placement restored in other modes.
+        let placement: ChartPosition = workspace.mode == .analysis && (chartPosition == .off || chartPosition == .inline)
+            ? .below : chartPosition
+        switch placement {
+        case .off, .inline:
+            chartView.isHidden = true
+            imageView.frame = b
+        case .below:
+            chartView.isHidden = false
+            chartView.frame = NSRect(x: 0, y: 0, width: mainW, height: chartH)
+            imageView.frame = NSRect(x: 0, y: chartH, width: mainW, height: free - chartH)
+        case .above:
+            chartView.isHidden = false
+            imageView.frame = NSRect(x: 0, y: 0, width: mainW, height: free - chartH)
+            chartView.frame = NSRect(x: 0, y: free - chartH, width: mainW, height: chartH)
+        }
     }
 
     private func numberField(_ value: String, x: CGFloat, y: CGFloat, w: CGFloat,
@@ -236,194 +239,252 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         return f
     }
 
-    /// Only the numeric inputs live in the window. Palettes, markers, plot
-    /// placement, range mode and the toggles are menu items instead -- they
-    /// are choices, not values, and three rows of controls crowding the video
-    /// is not what a Mac app looks like.
-    private func buildControls() {
-        controlBar.autoresizingMask = [.width]
-        view.addSubview(controlBar)
-
-        func add(_ title: String, _ field: NSTextField, x: CGFloat, w: CGFloat) {
-            let l = NSTextField(labelWithString: title)
-            l.frame = NSRect(x: x, y: 26, width: w + 30, height: 14)
-            l.font = .systemFont(ofSize: 10)
-            l.textColor = .secondaryLabelColor
-            controlBar.addSubview(l)
-            field.frame = NSRect(x: x, y: 4, width: w, height: 21)
-            controlBar.addSubview(field)
+    /// All controls reuse the existing actions and state. Moving between workspaces
+    /// never replaces the measurement store, recorder, history or renderer.
+    private func buildNativeWorkspace() {
+        func text(_ title: String) -> NSTextField {
+            let result = NSTextField(labelWithString: title)
+            result.font = .systemFont(ofSize: 11)
+            result.textColor = .secondaryLabelColor
+            return result
+        }
+        func hint(_ title: String) -> NSTextField {
+            let result = NSTextField(wrappingLabelWithString: title)
+            result.font = .systemFont(ofSize: 10)
+            result.textColor = .secondaryLabelColor
+            return result
+        }
+        func button(_ title: String, _ action: Selector) -> NSButton {
+            let result = NSButton(title: title, target: self, action: action)
+            result.bezelStyle = .rounded
+            result.font = .systemFont(ofSize: 11)
+            return result
+        }
+        func field(_ value: String, _ action: Selector, width: CGFloat = 55) -> NSTextField {
+            let result = numberField(value, x: 0, y: 0, w: width, action: action)
+            result.translatesAutoresizingMaskIntoConstraints = false
+            result.widthAnchor.constraint(equalToConstant: width).isActive = true
+            return result
+        }
+        func row(_ views: NSView...) -> NSStackView { NativeWorkspace.stack(views) }
+        func controlGroup(_ title: String, _ control: NSView) -> NSStackView {
+            NativeWorkspace.stack([text(title), control])
         }
 
-        minField = numberField(String(format: "%.1f", manualMin), x: 0, y: 0, w: 0,
-                               action: #selector(rangeFieldChanged(_:)))
-        maxField = numberField(String(format: "%.1f", manualMax), x: 0, y: 0, w: 0,
-                               action: #selector(rangeFieldChanged(_:)))
-        isoAboveField = numberField("", x: 0, y: 0, w: 0, action: #selector(isothermChanged(_:)))
-        isoBelowField = numberField("", x: 0, y: 0, w: 0, action: #selector(isothermChanged(_:)))
-        changeThresholdField = numberField("2.0", x: 0, y: 0, w: 0,
-                                           action: #selector(changeThresholdChanged(_:)))
+        workspacePalette.addItems(withTitles: Palette.allCases.map(\.displayName))
+        workspacePalette.target = self
+        workspacePalette.action = #selector(toolbarPaletteChanged(_:))
+        workspacePalette.setAccessibilityLabel("Colour palette")
+        workspacePlot.addItems(withTitles: ["Off", "Above image", "Below image", "On image"])
+        workspacePlot.target = self
+        workspacePlot.action = #selector(toolbarPlotChanged(_:))
+        workspacePlot.toolTip = "On image: plots stay in photos, video and the virtual camera."
+        workspacePlot.setAccessibilityLabel("Plot placement")
+        workspaceRange.segmentCount = 2
+        workspaceRange.setLabel("Auto", forSegment: 0)
+        workspaceRange.setLabel("Manual", forSegment: 1)
+        workspaceRange.trackingMode = .selectOne
+        workspaceRange.target = self
+        workspaceRange.action = #selector(toolbarRangeChanged(_:))
+        workspaceMarkers.segmentCount = 3
+        workspaceMarkers.trackingMode = .selectAny
+        for (i, title) in ["Max", "Min", "Centre"].enumerated() {
+            workspaceMarkers.setLabel(title, forSegment: i)
+        }
+        workspaceMarkers.target = self
+        workspaceMarkers.action = #selector(toolbarMarkersChanged(_:))
+
+        minField = field(String(format: "%.1f", manualMin), #selector(rangeFieldChanged(_:)))
+        maxField = field(String(format: "%.1f", manualMax), #selector(rangeFieldChanged(_:)))
+        isoAboveField = field("", #selector(isothermChanged(_:)))
+        isoBelowField = field("", #selector(isothermChanged(_:)))
         isoAboveField.placeholderString = "off"
         isoBelowField.placeholderString = "off"
+        minField.setAccessibilityLabel("Colour scale minimum Celsius")
+        maxField.setAccessibilityLabel("Colour scale maximum Celsius")
+        isoAboveField.setAccessibilityLabel("Highlight above Celsius")
+        isoBelowField.setAccessibilityLabel("Highlight below Celsius")
+        changeThresholdField = field("2.0", #selector(changeThresholdChanged(_:)))
+        changeThresholdField.setAccessibilityLabel("Change threshold Celsius")
+        workspaceChanges = NSButton(checkboxWithTitle: "New changes", target: self,
+                                    action: #selector(toggleChangeDetection(_:)))
+        workspaceChanges.font = .systemFont(ofSize: 11)
+        let displayTop = row(controlGroup("Palette", workspacePalette),
+                             controlGroup("Plots", workspacePlot), workspaceMarkers)
+        let displayBottom = row(workspaceRange, minField, text("—"), maxField, text("°C"),
+                                text("Hot >"), isoAboveField, text("Cold <"), isoBelowField)
+        displayTop.spacing = 12
+        displayBottom.spacing = 5
 
-        add("scale min °C", minField, x: 12, w: 62)
-        add("scale max °C", maxField, x: 84, w: 62)
-        add("alarm > °C", isoAboveField, x: 166, w: 62)
-        add("alarm < °C", isoBelowField, x: 238, w: 62)
-        add("new spot Δ°C", changeThresholdField, x: 320, w: 62)
+        workspaceTools = NSSegmentedControl(labels: ["Area", "Line"], trackingMode: .selectOne,
+                                             target: self, action: #selector(toolbarToolChanged(_:)))
+        // Click always places a point; a drag uses the selected area/line tool.
+        let toolViews: [NSView] = [
+            text("MEASURE"),
+            hint("Click: point\nDrag: tool"),
+            workspaceTools,
+            button("↺ Left", #selector(rotateLeft(_:))),
+            button("↻ Right", #selector(rotateRight(_:))),
+            button("Reset", #selector(resetRotation(_:))),
+            button("NUC", #selector(runNUC(_:))),
+            button("IR + RGB", #selector(showRGBAlignment(_:)))
+        ]
+        workspaceTools.setWidth(30, forSegment: 0)
+        workspaceTools.setWidth(30, forSegment: 1)
+        workspaceTools.controlSize = .small
 
-        gestureHint.frame = NSRect(x: 400, y: 8, width: 340, height: 14)
-        gestureHint.font = .systemFont(ofSize: 10)
-        gestureHint.textColor = .tertiaryLabelColor
-        controlBar.addSubview(gestureHint)
-        updateGestureHint()
+        table.dataSource = self
+        table.delegate = self
+        table.rowHeight = 25
+        table.usesAlternatingRowBackgroundColors = true
+        table.style = .inset
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        for (id, title, width) in [("name", "Object", 55.0), ("min", "Min", 49.0),
+                                    ("avg", "Avg", 49.0), ("max", "Max", 49.0), ("emis", "ε", 42.0)] {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
+            column.title = title
+            column.width = width
+            table.addTableColumn(column)
+        }
+        let tableScroll = NSScrollView()
+        tableScroll.hasVerticalScroller = true
+        tableScroll.autohidesScrollers = true
+        tableScroll.documentView = table
+        tableScroll.heightAnchor.constraint(equalToConstant: 175).isActive = true
+        trackButton = button("Stick to object", #selector(toggleTrackSelected(_:)))
+        trackButton.toolTip = "Track the selected point, area or line as the camera or object moves."
+        linePointsField = field("3", #selector(linePointsChanged(_:)), width: 38)
+        linePointsField.setAccessibilityLabel("Number of line profile markers")
+        lineModeControl = NSSegmentedControl(labels: ["Hot", "Cold", "Avg", "Med"],
+                                              trackingMode: .selectOne, target: self,
+                                              action: #selector(lineModeChanged(_:)))
+        lineModeControl.selectedSegment = 0
+        lineModeControl.toolTip = "Hot/cold: peaks. Avg/med: crossings of the average or median."
+        emissivityField = field("", #selector(applyEmissivity(_:)), width: 58)
+        emissivityField.placeholderString = "global"
+        emissivityField.setAccessibilityLabel("Selected object emissivity, empty uses global")
+        let measurementCard = WorkspaceCard("Measurements", views: [
+            tableScroll,
+            row(trackButton, button("Unstick all", #selector(stopAllTracking(_:)))),
+            row(button("Remove", #selector(removeMeasurement(_:))),
+                button("Clear all", #selector(clearMeasurements(_:)))),
+            row(text("Emissivity ε"), emissivityField, button("Apply", #selector(applyEmissivity(_:)))),
+            row(text("Line markers"), linePointsField),
+            lineModeControl,
+            hint("Click = point · drag = area/line · Shift switches the drag tool.")
+        ])
+        workspaceHardwareRange.addItems(withTitles: ["Normal  −20…120 °C", "High  −20…450 °C"])
+        workspaceHardwareRange.target = self
+        workspaceHardwareRange.action = #selector(workspaceHardwareRangeChanged(_:))
+        let cameraCard = WorkspaceCard("Sensor & temperature", views: [
+            workspaceHardwareRange,
+            row(button("NUC", #selector(runNUC(_:))),
+                button("1 reference", #selector(calibrateTemperature(_:))),
+                button("2 references", #selector(calibrateTwoPoint(_:)))),
+            button("Reset calibration for this range", #selector(resetCalibration(_:))),
+            hint("NUC evens out pixels. Temperature calibration uses a known reference."),
+            row(workspaceChanges, changeThresholdField, text("Δ°C"))
+        ])
+        workspaceVirtual = NSButton(checkboxWithTitle: "Publish virtual camera", target: self,
+                                    action: #selector(toggleVirtualCamera(_:)))
+        let sharingCard = WorkspaceCard("Sharing", views: [
+            workspaceVirtual,
+            button("Install / manage extension…", #selector(workspaceManageExtension(_:))),
+            hint("Measurements and on-image plots are included in the shared frame.")
+        ])
 
+        csvToggle = NSButton(checkboxWithTitle: "+ temperature matrix CSV", target: self,
+                             action: #selector(toggleCSV(_:)))
+        csvToggle.state = recorder.savesCSV ? .on : .off
+        csvToggle.font = .systemFont(ofSize: 11)
+        let photoCard = WorkspaceCard("Photo", views: [
+            csvToggle,
+            button("Save photo  ⌘S", #selector(savePhoto(_:))),
+            button("Open output folder", #selector(openOutputFolder(_:)))
+        ])
+        recordButton = button("Record video", #selector(toggleVideo(_:)))
+        let videoCard = WorkspaceCard("Video", views: [
+            hint("H.264 MOV · includes measurements\nand plots placed on the image"),
+            recordButton,
+            hint("CSV log can run alongside video.")
+        ])
+        intervalSecondsField = field("10", #selector(noop(_:)), width: 44)
+        intervalMinutesField = field("5", #selector(noop(_:)), width: 44)
+        intervalSecondsField.setAccessibilityLabel("Time-lapse interval seconds")
+        intervalMinutesField.setAccessibilityLabel("Time-lapse duration minutes")
+        intervalButton = button("Start time-lapse", #selector(toggleInterval(_:)))
+        let intervalCard = WorkspaceCard("Time-lapse", views: [
+            row(text("Every"), intervalSecondsField, text("s · for"), intervalMinutesField, text("min")),
+            intervalButton,
+            hint("PNG + CSV when the photo matrix option is enabled.")
+        ])
+        logSecondsField = field("1", #selector(noop(_:)), width: 44)
+        logSecondsField.setAccessibilityLabel("CSV log interval seconds")
+        logButton = button("Start CSV log", #selector(toggleLog(_:)))
+        let logCard = WorkspaceCard("Measurement log", views: [
+            row(text("Sample every"), logSecondsField, text("s")),
+            logButton,
+            hint("Markers and objects over time.\nSeparate from the full pixel matrix.")
+        ])
+        quickVideo = button("Record video", #selector(toggleVideo(_:)))
+        quickInterval = button("Start time-lapse", #selector(toggleInterval(_:)))
+        quickLog = button("Start CSV log", #selector(toggleLog(_:)))
+        let workspace = NativeWorkspace(tools: toolViews, display: [displayTop, displayBottom],
+                                        sidebar: [measurementCard, cameraCard, sharingCard],
+                                        capture: [photoCard, videoCard, intervalCard, logCard],
+                                        quickCapture: [text("CAPTURE"), button("Save photo", #selector(savePhoto(_:))),
+                                                       quickVideo, quickInterval, quickLog,
+                                                       button("Output folder", #selector(openOutputFolder(_:)))],
+                                        status: statusLabel, captureStatus: captureStatus)
+        self.workspace = workspace
+        workspace.irPower.target = self
+        workspace.irPower.action = #selector(toggleIRCamera(_:))
+        workspace.imageHost.addSubview(imageView)
+        workspace.imageHost.addSubview(chartView)
+        workspace.onLayoutChanged = { [weak self] in self?.layoutImageAndChart() }
+        view.addSubview(workspace)
+        syncWorkspace()
         updateRangeEnabled()
     }
 
-    private func buildPanel() {
-        let panel = panelView
-        panel.frame = NSRect(x: 0, y: 0,
-                             width: ThermalViewController.panelWidth,
-                             height: ThermalViewController.contentHeight)
-        panel.wantsLayer = true
-        panel.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        view.addSubview(panel)
+    func syncWorkspace() {
+        guard workspace != nil else { return }
+        workspace?.irPower.title = isIRRunning ? "IR ON · Stop" : "IR OFF · Start"
+        workspace?.irPower.toolTip = isIRRunning
+            ? "Stop IR capture, video, time-lapse and CSV logging"
+            : "Start the thermal camera"
+        workspacePalette.selectItem(at: palette.rawValue)
+        workspacePlot.selectItem(at: chartPosition.rawValue)
+        workspaceRange.selectedSegment = manualRange ? 1 : 0
+        workspaceMarkers.setSelected(showMax, forSegment: 0)
+        workspaceMarkers.setSelected(showMin, forSegment: 1)
+        workspaceMarkers.setSelected(showCentre, forSegment: 2)
+        workspaceTools.selectedSegment = dragTool.rawValue
+        workspaceChanges.state = detectChanges ? .on : .off
+        workspaceVirtual.state = publishToVirtualCam ? .on : .off
+        workspaceHardwareRange.selectItem(at: measurementRange == .high ? 1 : 0)
+        minField.isEnabled = manualRange
+        maxField.isEnabled = manualRange
+        quickVideo.title = recorder.isRecordingVideo ? "Stop video" : "Record video"
+        quickInterval.title = recorder.isRunningInterval ? "Stop time-lapse" : "Start time-lapse"
+        quickLog.title = recorder.isLogging ? "Stop CSV log" : "Start CSV log"
+    }
 
-        let W = ThermalViewController.panelWidth
-        var y = ThermalViewController.contentHeight - 28
+    @objc private func workspaceHardwareRangeChanged(_ sender: NSPopUpButton) {
+        let item = NSMenuItem()
+        item.tag = sender.indexOfSelectedItem
+        selectRange(item)
+        syncWorkspace()
+    }
 
-        let title = NSTextField(labelWithString: "Measurements")
-        title.frame = NSRect(x: 12, y: y, width: W - 24, height: 18)
-        title.font = .boldSystemFont(ofSize: 12)
-        panel.addSubview(title)
-        y -= 190
+    @objc private func workspaceManageExtension(_ sender: Any?) {
+        (NSApp.delegate as? AppDelegate)?.showExtensionInstaller(sender)
+    }
 
-        let scroll = NSScrollView(frame: NSRect(x: 12, y: y, width: W - 24, height: 182))
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        table.dataSource = self
-        table.delegate = self
-        table.rowHeight = 17
-        table.usesAlternatingRowBackgroundColors = true
-        for (id, titleText, w) in [("name", "Obj", 44.0), ("min", "min", 52.0),
-                                   ("avg", "avg", 52.0), ("max", "max", 52.0),
-                                   ("emis", "ε", 40.0)] {
-            let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
-            col.title = titleText
-            col.width = w
-            table.addTableColumn(col)
-        }
-        scroll.documentView = table
-        panel.addSubview(scroll)
-        y -= 34
-
-        trackButton = NSButton(title: "Track", target: self,
-                               action: #selector(toggleTrackSelected(_:)))
-        trackButton.frame = NSRect(x: 12, y: y, width: 84, height: 26)
-        trackButton.toolTip = "Sticky: the selected object follows what it was placed on."
-        panel.addSubview(trackButton)
-        let removeButton = NSButton(title: "Remove", target: self, action: #selector(removeMeasurement(_:)))
-        removeButton.frame = NSRect(x: 102, y: y, width: 88, height: 26)
-        panel.addSubview(removeButton)
-        let clearButton = NSButton(title: "Clear all", target: self, action: #selector(clearMeasurements(_:)))
-        clearButton.frame = NSRect(x: 196, y: y, width: 92, height: 26)
-        panel.addSubview(clearButton)
-        y -= 32
-
-        panel.addSubview(label("Line: mark", x: 12, y: y + 4, w: 70))
-        linePointsField = numberField("3", x: 84, y: y, w: 36,
-                                      action: #selector(linePointsChanged(_:)))
-        panel.addSubview(linePointsField)
-        panel.addSubview(label("points that are", x: 128, y: y + 4, w: 110))
-        y -= 28
-
-        lineModeControl = NSSegmentedControl(labels: ["hot", "cold", "avg", "med"],
-                                             trackingMode: .selectOne, target: self,
-                                             action: #selector(lineModeChanged(_:)))
-        lineModeControl.frame = NSRect(x: 12, y: y, width: W - 24, height: 23)
-        lineModeControl.setSelected(true, forSegment: 0)
-        lineModeControl.toolTip = "hot/cold mark peaks; avg/med mark where the "
-            + "profile crosses its own average or median."
-        panel.addSubview(lineModeControl)
-        y -= 32
-
-        panel.addSubview(label("Emissivity of selected (blank = global)", x: 12, y: y + 4, w: W - 24))
-        y -= 28
-        emissivityField = numberField("", x: 12, y: y, w: 80,
-                                      action: #selector(applyEmissivity(_:)))
-        emissivityField.alignment = .left
-        emissivityField.placeholderString = "0.95"
-        panel.addSubview(emissivityField)
-        let applyButton = NSButton(title: "Apply", target: self, action: #selector(applyEmissivity(_:)))
-        applyButton.frame = NSRect(x: 100, y: y - 3, width: 80, height: 26)
-        panel.addSubview(applyButton)
-        y -= 40
-
-        let capTitle = NSTextField(labelWithString: "Capture")
-        capTitle.frame = NSRect(x: 12, y: y, width: W - 24, height: 18)
-        capTitle.font = .boldSystemFont(ofSize: 12)
-        panel.addSubview(capTitle)
-        y -= 32
-
-        let photoButton = NSButton(title: "Save Photo", target: self, action: #selector(savePhoto(_:)))
-        photoButton.frame = NSRect(x: 12, y: y, width: 130, height: 26)
-        panel.addSubview(photoButton)
-        csvToggle = NSButton(checkboxWithTitle: "+ CSV", target: self,
-                             action: #selector(toggleCSV(_:)))
-        csvToggle.state = .on
-        csvToggle.frame = NSRect(x: 150, y: y + 3, width: 90, height: 22)
-        csvToggle.toolTip = "Also save the temperature matrix, so the capture stays measurable."
-        panel.addSubview(csvToggle)
-        y -= 32
-
-        recordButton = NSButton(title: "Record Video", target: self, action: #selector(toggleVideo(_:)))
-        recordButton.frame = NSRect(x: 12, y: y, width: W - 24, height: 26)
-        panel.addSubview(recordButton)
-        y -= 34
-
-        panel.addSubview(label("Every", x: 12, y: y + 4, w: 40))
-        intervalSecondsField = numberField("10", x: 56, y: y, w: 44, action: #selector(noop(_:)))
-        panel.addSubview(intervalSecondsField)
-        panel.addSubview(label("s, for", x: 106, y: y + 4, w: 40))
-        intervalMinutesField = numberField("5", x: 148, y: y, w: 44, action: #selector(noop(_:)))
-        panel.addSubview(intervalMinutesField)
-        panel.addSubview(label("min", x: 198, y: y + 4, w: 30))
-        y -= 32
-
-        intervalButton = NSButton(title: "Start Time-lapse", target: self,
-                                  action: #selector(toggleInterval(_:)))
-        intervalButton.frame = NSRect(x: 12, y: y, width: W - 24, height: 26)
-        panel.addSubview(intervalButton)
-        y -= 30
-
-        panel.addSubview(label("Log every", x: 12, y: y + 4, w: 62))
-        logSecondsField = numberField("1", x: 78, y: y, w: 44, action: #selector(noop(_:)))
-        panel.addSubview(logSecondsField)
-        panel.addSubview(label("s", x: 128, y: y + 4, w: 14))
-        y -= 32
-
-        logButton = NSButton(title: "Start CSV Log", target: self, action: #selector(toggleLog(_:)))
-        logButton.frame = NSRect(x: 12, y: y, width: W - 24, height: 26)
-        logButton.toolTip = "Logs every visible marker and measurement object over time."
-        panel.addSubview(logButton)
-        y -= 30
-
-        let openButton = NSButton(title: "Open Output Folder", target: self,
-                                  action: #selector(openOutputFolder(_:)))
-        openButton.frame = NSRect(x: 12, y: y, width: W - 24, height: 26)
-        panel.addSubview(openButton)
-        y -= 40
-
-        captureStatus.frame = NSRect(x: 12, y: 12, width: W - 24, height: y)
-        captureStatus.font = .systemFont(ofSize: 10)
-        captureStatus.textColor = .secondaryLabelColor
-        captureStatus.maximumNumberOfLines = 6
-        captureStatus.lineBreakMode = .byWordWrapping
-        panel.addSubview(captureStatus)
-
-        // Contents are laid out from the panel's top, so they must keep their
-        // distance from it rather than from the bottom when the window grows.
-        for child in panel.subviews { child.autoresizingMask = [.minYMargin] }
+    @objc func showRGBAlignment(_ sender: Any?) {
+        if rgbPanel == nil { rgbPanel = RGBAlignmentPanel(camera: rgbCamera) }
+        rgbPanel?.showWindow(sender)
+        rgbPanel?.window?.makeKeyAndOrderFront(nil)
     }
 
     /// Spells out what the current tool does, so the mode is never a guess.
@@ -444,7 +505,63 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
 
     // MARK: - Capture pipeline
 
+    @objc func toggleIRCamera(_ sender: Any?) {
+        if isIRRunning { stopIRCamera() } else { start() }
+    }
+
+    private func isCurrentCapture(_ generation: UUID) -> Bool {
+        frameLock.lock(); defer { frameLock.unlock() }
+        return captureGeneration == generation
+    }
+
+    private func closeShutter(for generation: UUID) -> Bool {
+        frameLock.lock(); defer { frameLock.unlock() }
+        guard captureGeneration == generation else { return false }
+        try? UVCControl.send(UVCControl.cmdShutterClose)
+        return true
+    }
+
+    /// Release the physical input and discard live values; measurement
+    /// objects, palette and calibration remain available for the next run.
+    func stopIRCamera() {
+        frameLock.lock(); captureGeneration = UUID(); frameLock.unlock()
+        isIRRunning = false
+        capture.onFrame = nil // drains in-flight rendering before state is cleared
+        capture.stop()
+        nucInProgress = false
+        rgbCamera.cancelMotion()
+        recorder.stopLog()
+        recorder.stopInterval()
+        if recorder.isRecordingVideo { toggleVideo(nil) }
+        intervalButton.title = "Start time-lapse"
+        logButton.title = "Start CSV log"
+        frameLock.lock()
+        lastImage = nil
+        lastTemps = []
+        lastResults = []
+        lastLogRow = [:]
+        lastCalibrationSample = nil
+        lastCalibrationTime = .distantPast
+        frameLock.unlock()
+        history.clear()
+        chartView.series = []
+        tracker.stopAll()
+        changeDetector.reset()
+        imageView.image = nil
+        imageView.emptyMessage = "IR camera is OFF — click IR OFF · Start above"
+        table.reloadData()
+        virtualCam.clear()
+        setStatus("IR camera OFF · capture and live measurements stopped")
+        syncToolbar()
+    }
+
     private func start() {
+        guard !isIRRunning else { return }
+        frameLock.lock()
+        captureGeneration = UUID()
+        let generation = captureGeneration
+        frameLock.unlock()
+        imageView.emptyMessage = "Starting IR camera…"
         // Put the sensor in raw mode and commit sane radiometric parameters.
         // saveParameters is what makes these actually stick; without it
         // emissivity sits at a bogus default and the temperature table comes
@@ -459,14 +576,18 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         }
 
         capture.onFrame = { [weak self] raw in
-            self?.handle(raw: raw)
+            self?.handle(raw: raw, generation: generation)
         }
         do {
             try capture.start()
+            isIRRunning = true
+            syncToolbar()
             setStatus(calibration.isCalibrated
                 ? String(format: "Running. Using saved calibration (shutter offset %.2f).", calibration.shutterOffset)
                 : "Running, but not calibrated - press \u{2318}K aiming at something whose temperature you know.")
         } catch {
+            stopIRCamera()
+            imageView.emptyMessage = "IR unavailable — connect camera and click Start"
             setStatus(error.localizedDescription)
         }
 
@@ -509,7 +630,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         }
     }
 
-    private func handle(raw: [UInt16]) {
+    private func handle(raw: [UInt16], generation: UUID) {
         guard !nucInProgress else { return }
         guard raw.count == ThermalCapture.width * ThermalCapture.fullHeight else { return }
         let tStart = CFAbsoluteTimeGetCurrent()
@@ -537,14 +658,15 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
                 meta: meta, shutterOffset: calibration.shutterOffset,
                 range: measurementRange,
                 scale: calibration.scale, bias: calibration.bias) else {
-            rejectTemperatureFrame()
+            rejectTemperatureFrame(generation: generation)
             return
         }
         let temps = lookup(smoothed, in: table)
         guard temps.allSatisfy({ $0.isFinite }) else {
-            rejectTemperatureFrame()
+            rejectTemperatureFrame(generation: generation)
             return
         }
+        rgbCamera.observeMotion(temperatures: temps, rotation: turn, arrival: capture.frameArrivalTime)
 
         let extremes = ThermalProcessor.extremes(temps)
         let centerIndex = (fh / 2) * fw + fw / 2
@@ -651,6 +773,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             note = (note.map { $0 + " · " } ?? "") + "LOG \(recorder.logRowsWritten)"
         }
 
+        let rgb = rgbCamera.pair(at: capture.frameArrivalTime)
         let frame = ThermalRenderer.Frame(
             temperatures: temps,
             normalized: normalized,
@@ -671,7 +794,11 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
             showsMin: showMin,
             showsCentre: showCentre,
             changes: changes,
-            lostTracks: lostTracks)
+            lostTracks: lostTracks,
+            rgbImage: rgb.image,
+            rgbAlignment: rgb.alignment,
+            rotation: rotation,
+            fusionNote: rgb.note)
 
         let tBeforeRender = CFAbsoluteTimeGetCurrent()
         guard let image = ThermalRenderer.render(frame) else { return }
@@ -695,7 +822,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
                               total: CFAbsoluteTimeGetCurrent() - tStart)
 
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+            guard let self, self.isCurrentCapture(generation) else { return }
             for move in moves {
                 self.measurements.move(name: move.name, dx: move.dx, dy: move.dy,
                                        width: fw, height: fh)
@@ -754,8 +881,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     }
 
     private func setCaptureStatus(_ text: String) {
-        if Thread.isMainThread { captureStatus.stringValue = text }
-        else { DispatchQueue.main.async { self.captureStatus.stringValue = text } }
+        if Thread.isMainThread { captureStatus.stringValue = text; syncToolbar() }
+        else { DispatchQueue.main.async { self.captureStatus.stringValue = text; self.syncToolbar() } }
     }
 
     private func currentFrame() -> (CGImage, [Double])? {
@@ -901,7 +1028,8 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         let row = table.selectedRow
         let tracked = measurements.items.indices.contains(row)
             && measurements.items[row].tracked
-        trackButton.title = tracked ? "Untrack" : "Track"
+        trackButton.title = tracked ? "Unstick object" : "Stick to object"
+        trackButton.isEnabled = measurements.items.indices.contains(row)
         toolbarTrack?.title = tracked ? "Untrack" : "Track"
     }
 
@@ -1027,12 +1155,17 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     }
 
     @objc func toggleVideo(_ sender: Any?) {
+        defer { syncToolbar() }
         if recorder.isRecordingVideo {
             recorder.stopVideo { [weak self] url in
                 self?.recordButton.title = "Record Video"
                 self?.setCaptureStatus(url.map { "Saved \($0.lastPathComponent)" }
                                        ?? "Recording stopped.")
             }
+            return
+        }
+        guard isIRRunning, currentFrame() != nil else {
+            setCaptureStatus("Start the IR camera and wait for a valid frame first.")
             return
         }
         do {
@@ -1046,10 +1179,15 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     }
 
     @objc func toggleInterval(_ sender: Any?) {
+        defer { syncToolbar() }
         if recorder.isRunningInterval {
             recorder.stopInterval()
             intervalButton.title = "Start Time-lapse"
             setCaptureStatus("Time-lapse stopped after \(recorder.intervalShotsTaken) shots.")
+            return
+        }
+        guard isIRRunning, currentFrame() != nil else {
+            setCaptureStatus("Start the IR camera and wait for a valid frame first.")
             return
         }
         let seconds = Double(intervalSecondsField.stringValue) ?? 0
@@ -1077,6 +1215,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     }
 
     @objc func toggleLog(_ sender: Any?) {
+        defer { syncToolbar() }
         if recorder.isLogging {
             recorder.stopLog()
             logButton.title = "Start CSV Log"
@@ -1116,7 +1255,7 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
 
     // MARK: - Calibration
 
-    private func rejectTemperatureFrame() {
+    private func rejectTemperatureFrame(generation: UUID) {
         frameLock.lock()
         lastCalibrationSample = nil
         lastImage = nil
@@ -1124,7 +1263,10 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
         lastResults = []
         lastLogRow = [:]
         frameLock.unlock()
-        setStatus("Temperature unavailable: invalid sensor data or measurement parameters.")
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isCurrentCapture(generation) else { return }
+            self.setStatus("Temperature unavailable: invalid sensor data or measurement parameters.")
+        }
     }
 
     private func calibrationSample() -> Calibration.Sample? {
@@ -1224,69 +1366,73 @@ final class ThermalViewController: NSViewController, NSMenuItemValidation, NSTex
     /// the reference too early yields a reference full of real scene, which
     /// then gets subtracted out of every later frame.
     @objc func runNUC(_ sender: Any?) {
-        guard !nucInProgress else { return }
+        guard isIRRunning, !nucInProgress else { return }
+        frameLock.lock(); let generation = captureGeneration; frameLock.unlock()
+        // Replace and drain the normal callback before changing calibration state.
+        capture.onFrame = nil
         nucInProgress = true
         setStatus("Recalibrating sensor — closing shutter…")
 
+        var collected: [[UInt16]] = []
+        let lock = NSLock()
+        var settledFrames = 0
+        capture.onFrame = { raw in
+            lock.lock(); defer { lock.unlock() }
+            let image = Array(raw[0..<(ThermalCapture.width * ThermalCapture.imageHeight)])
+            let mean = image.reduce(0.0) { $0 + Double($1) } / Double(image.count)
+            let variance = image.reduce(0.0) { $0 + pow(Double($1) - mean, 2) } / Double(image.count)
+            // Flat frame => shutter is genuinely closed.
+            if sqrt(variance) < 6.0 {
+                settledFrames += 1
+                if settledFrames > 3 && collected.count < 15 { collected.append(raw) }
+            } else {
+                settledFrames = 0
+            }
+        }
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            defer {
-                self.nucInProgress = false
-            }
-
-            var collected: [[UInt16]] = []
-            let lock = NSLock()
-            var settledFrames = 0
-
-            self.capture.onFrame = { raw in
-                lock.lock(); defer { lock.unlock() }
-                let image = Array(raw[0..<(ThermalCapture.width * ThermalCapture.imageHeight)])
-                let mean = image.reduce(0.0) { $0 + Double($1) } / Double(image.count)
-                let variance = image.reduce(0.0) { $0 + pow(Double($1) - mean, 2) } / Double(image.count)
-                // Flat frame => shutter is genuinely closed.
-                if sqrt(variance) < 6.0 {
-                    settledFrames += 1
-                    if settledFrames > 3 && collected.count < 15 { collected.append(raw) }
-                } else {
-                    settledFrames = 0
-                }
-            }
-
             for _ in 0..<40 {
-                try? UVCControl.send(UVCControl.cmdShutterClose)   // must be re-sent to stay shut
+                // The generation check and USB command are atomic with OFF,
+                // so a cancelled NUC cannot close the shutter on a new run.
+                guard self.closeShutter(for: generation) else { return }
                 Thread.sleep(forTimeInterval: 0.25)
                 lock.lock(); let enough = collected.count >= 15; lock.unlock()
                 if enough { break }
             }
 
             lock.lock(); let frames = collected; lock.unlock()
-            let result = self.calibration.buildReference(from: frames)
 
             // Let the shutter physically reopen before resuming the view.
             Thread.sleep(forTimeInterval: 2.0)
-            self.capture.onFrame = { [weak self] raw in self?.handle(raw: raw) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isCurrentCapture(generation) else { return }
+                self.capture.onFrame = nil
+                let result = self.calibration.buildReference(from: frames)
+                self.nucInProgress = false
+                self.capture.onFrame = { [weak self] raw in
+                    self?.handle(raw: raw, generation: generation)
+                }
 
-            let note: String
-            if frames.isEmpty {
-                note = "Sensor recalibration failed: shutter never settled."
-            } else if result.applied {
-                note = "Sensor recalibrated (\(result.deadCount) dead pixels corrected)."
-            } else if result.deadCount > 0 {
-                note = "Sensor recalibrated. \(result.deadCount) pixels looked defective — far more "
-                    + "than normal, so that correction was skipped rather than smear the image."
-            } else {
-                note = "Sensor recalibrated."
+                let note: String
+                if frames.isEmpty {
+                    note = "Sensor recalibration failed: shutter never settled."
+                } else if result.applied {
+                    note = "Sensor recalibrated (\(result.deadCount) dead pixels corrected)."
+                } else if result.deadCount > 0 {
+                    note = "Sensor recalibrated. \(result.deadCount) pixels looked defective — far more "
+                        + "than normal, so that correction was skipped rather than smear the image."
+                } else {
+                    note = "Sensor recalibrated."
+                }
+                self.setStatus(note)
             }
-            self.setStatus(note)
         }
     }
 
     func shutdown() {
-        recorder.stopLog()
-        recorder.stopInterval()
-        if recorder.isRecordingVideo { recorder.stopVideo { _ in } }
-        capture.stop()
-        virtualCam.clear()
+        rgbCamera.stop()
+        stopIRCamera()
     }
 }
 

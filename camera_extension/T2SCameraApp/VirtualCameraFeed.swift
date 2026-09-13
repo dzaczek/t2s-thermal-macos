@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import Darwin
 
 /// Publishes rendered frames to the camera extension.
 ///
@@ -19,9 +20,8 @@ final class VirtualCameraFeed {
     private(set) var isAvailable = false
     private(set) var framesPublished = 0
 
-    init() {
-        let container = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: VirtualCameraFeed.appGroupID)
+    init(container: URL? = FileManager.default.containerURL(
+        forSecurityApplicationGroupIdentifier: VirtualCameraFeed.appGroupID)) {
         frameURL = container?.appendingPathComponent("frame.raw")
         tempURL = container?.appendingPathComponent("frame.tmp")
         isAvailable = container != nil
@@ -37,7 +37,9 @@ final class VirtualCameraFeed {
               let data = ThermalRenderer.bgraBytes(from: image) else { return }
         do {
             try data.write(to: tempURL, options: .atomic)
-            _ = try FileManager.default.replaceItemAt(frameURL, withItemAt: tempURL)
+            // rename creates the destination after OFF/clear as well as
+            // atomically replacing it during normal streaming.
+            guard rename(tempURL.path, frameURL.path) == 0 else { return }
             framesPublished += 1
         } catch {
             // A dropped frame is not worth interrupting the live view for;

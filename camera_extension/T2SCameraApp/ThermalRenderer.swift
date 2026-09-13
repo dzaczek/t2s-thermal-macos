@@ -114,6 +114,10 @@ struct ThermalRenderer {
         /// Tracked objects whose target was not found in this frame. They are
         /// still drawn, marked, where they were last seen.
         var lostTracks: Set<String> = []
+        var rgbImage: CGImage?
+        var rgbAlignment = RGBAlignment()
+        var rotation: ImageRotation = .none
+        var fusionNote = ""
     }
 
     private static let alarmHot = NSColor(calibratedRed: 1.0, green: 0.15, blue: 0.15, alpha: 1)
@@ -132,6 +136,9 @@ struct ThermalRenderer {
 
         ctx.setFillColor(NSColor.black.cgColor)
         ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        if let rgb = frame.rgbImage, frame.rgbAlignment.mode != 0 {
+            drawRGB(rgb, alignment: frame.rgbAlignment, rotation: frame.rotation, place: place, in: ctx)
+        }
 
         // Thermal image, upscaled.
         let lut = frame.palette.lut
@@ -160,7 +167,11 @@ struct ThermalRenderer {
                                  provider: provider, decode: nil,
                                  shouldInterpolate: true, intent: .defaultIntent) {
             ctx.interpolationQuality = .high
+            if frame.rgbImage != nil && frame.rgbAlignment.mode != 0 {
+                ctx.setAlpha(frame.rgbAlignment.mode == 1 ? 0 : frame.rgbAlignment.alpha)
+            }
             ctx.draw(thermal, in: place.rect)
+            ctx.setAlpha(1)
         }
 
         drawScaleBar(ctx, frame: frame, x: imageAreaWidth, width: barWidth, height: h)
@@ -188,6 +199,9 @@ struct ThermalRenderer {
 
         let hud = "\(frame.palette.displayName)   \(frame.calibrationNote)"
         draw(text: hud, in: ctx, at: CGPoint(x: u(10), y: u(8)), size: u(13), color: .systemYellow)
+        if !frame.fusionNote.isEmpty {
+            draw(text: frame.fusionNote, in: ctx, at: CGPoint(x: u(10), y: u(28)), size: u(10), color: .white)
+        }
 
         if let note = frame.recordingNote {
             let y = CGFloat(h) - u(22)
@@ -197,6 +211,24 @@ struct ThermalRenderer {
         }
 
         return ctx.makeImage()
+    }
+
+    private static func drawRGB(_ image: CGImage, alignment: RGBAlignment, rotation: ImageRotation,
+                                place: Layout, in ctx: CGContext) {
+        guard alignment.isValid else { return }
+        ctx.saveGState()
+        ctx.clip(to: place.rect)
+        ctx.translateBy(x: place.rect.midX, y: place.rect.midY)
+        ctx.rotate(by: -CGFloat(rotation.rawValue) * .pi / 2)
+        ctx.translateBy(x: alignment.x * place.pixel, y: -alignment.y * place.pixel)
+        ctx.rotate(by: -alignment.degrees * .pi / 180)
+        let scale = min(CGFloat(ThermalCapture.width) / CGFloat(image.width),
+                        CGFloat(ThermalCapture.imageHeight) / CGFloat(image.height)) * place.pixel * alignment.zoom
+        ctx.scaleBy(x: alignment.mirrored ? -scale : scale, y: scale)
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(x: -CGFloat(image.width) / 2, y: -CGFloat(image.height) / 2,
+                                   width: CGFloat(image.width), height: CGFloat(image.height)))
+        ctx.restoreGState()
     }
 
     /// Dashed outline around anything that just got hotter or colder, so a

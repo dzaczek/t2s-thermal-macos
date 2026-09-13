@@ -4,30 +4,90 @@
 
 ## Window layout
 
-The window is a video area with a control bar under it and a fixed 300pt panel
-on the right. All of it is laid out in `viewDidLayout` from the current view
-size rather than from fixed frames, so resizing cannot leave a control sitting
-on top of the video. The thermal image is aspect-fit inside its area, letterboxed
-rather than stretched -- which also keeps click-to-place accurate, since the
-mouse mapping uses the same rect the image is drawn into.
+Version 1.4 uses a native AppKit workspace with four layout modes:
+**Inspection**, **Electronics**, **Analysis** and **Presentation**. Modes preserve
+measurements, tracking, calibration, plot selection and active recording sessions.
+Inspection prioritises the sensor settings and uses a compact capture strip.
+Electronics expands the measurement inspector and capture settings. Analysis
+automatically adds a large history chart, even when plots are off or drawn on
+the image; the original plot selection is preserved for the other modes.
+Presentation hides the inspector and tool strip and maximises the image area.
+**Inspector** and **Capture settings** restore those controls in one click.
+Each mode remembers those panel choices for the current session.
 
-The **toolbar** carries what gets changed constantly -- palette, markers, plot
-placement, range mode, calibrate, NUC, save photo and record. It sits in the
-title bar, so unlike another row of buttons it costs the video area nothing,
-and it is customisable: right-click to add, remove or rearrange (new-spot
-detection and the virtual-camera toggle are available there too).
+The left strip contains the area/line drag tool, rotation and NUC. Clicking the
+image still adds a point, and Shift reverses the drag tool. The right inspector
+contains the measurement table, tracking, line analysis, emissivity, sensor
+calibration and virtual-camera controls. Scroll the inspector to reach its lower
+sections when the window is small.
 
-The control bar under the image holds the numeric inputs: scale min/max, the
-two alarm thresholds and the new-spot threshold.
+Below the image, **Palette** exposes all six palettes and **Plots** offers
+**Off / Above image / Below image / On image**. On-image plots are rendered
+into the same frame used for photos, time-lapse, movies and the virtual camera.
+Above/below plots are separate window panels. The Max/Min/Centre switches,
+automatic/manual colour scale and hot/cold thresholds remain directly accessible.
 
-The menu bar still holds everything, with the keyboard shortcuts and a
-checkmark showing the current setting:
+Four persistent capture sections at the bottom contain **Photo**, **Video**,
+**Time-lapse** and **Measurement log**. The photo CSV checkbox also controls
+matrices saved with time-lapse photos. The independent CSV log records measurement
+values over time. H.264 video currently contains the rendered image; full
+temperature matrices for each movie frame remain a separate planned addition.
+Version 1.5 adds beta RGB composition and motion-assisted camera alignment.
 
-- **Capture** -- Save Photo (⌘S), Recording (⇧⌘R), Time-lapse, CSV Log, Open
-  Output Folder (⇧⌘O)
-- **Camera** -- Calibrate (⌘K), NUC (⌘R), Publish to Virtual Camera
-- **View** -- Palette (⌘1..⌘6), Markers, Live Plot, Temperature Range,
-  Highlight New Hot / Cold Spots
+The toolbar retains quick calibration, NUC, photo and recording actions and can
+still be customised. All existing menus and shortcuts remain available.
+
+## Switching the thermal camera on and off
+
+The top **IR ON · Stop / IR OFF · Start** button is visible in all four modes.
+Stop releases the IR capture session, ends video, time-lapse and CSV logging,
+cancels NUC and motion alignment, and clears live images, readings and charts.
+Measurement objects, calibration and display settings are preserved. Start
+reopens the camera without restarting the app; recording sessions must be started
+again explicitly. The app still starts IR capture automatically at launch.
+This stops the USB video stream; it does not cut USB power to the camera.
+RGB has its own Start/Stop buttons in the alignment window. Combined rendering
+requires live IR frames even if RGB capture remains on.
+
+## Aligning an ordinary camera with thermal video (1.5 beta)
+
+Press **IR + RGB** on the left, or **Camera → Align RGB Camera… (Beta)**.
+Select an ordinary camera and press **Start RGB**. The thermal camera and this
+app's own virtual camera are excluded from the ordinary-camera list.
+
+Choose **RGB + temperature markers** for an ordinary-camera background with
+thermal measurements, or **Blend IR + RGB** to inspect alignment of both images.
+Composition happens before the renderer adds points, areas, line readouts and
+on-image plots, so those overlays also reach PNG, time-lapse, MOV and the virtual
+camera. Temperatures and CSV matrices still come exclusively from the IR sensor.
+
+For motion-assisted alignment:
+
+1. Fix both cameras in place, facing the same scene. Keep the background still.
+2. Press **Match by hand movement · 10 seconds**.
+3. Move one hand left/right **and** up/down at the intended working distance,
+   remaining visible in both cameras. Avoid filling most of the frame.
+4. If a candidate is found, use **Preview match** to inspect the live blend.
+5. **Accept match** applies and saves it for that RGB camera. **Cancel** restores
+   the alignment used before preview. An unsuccessful attempt changes nothing.
+
+The beta follows corresponding motion in thermal changes and RGB brightness
+changes; it is not a semantic hand/shape recogniser. A robust similarity fit
+estimates translation, uniform scale, rotation and optional horizontal mirroring.
+It requires motion in two directions and checks held-out observations. The
+reported residual is a fit error in IR pixels, not a guarantee of physical
+registration accuracy. Inspect the preview before accepting it.
+
+Manual X/Y, scale, rotation, mirroring and opacity remain available. Save them
+with **Save for this camera**. Changing camera mounting, focus or working distance
+may require realignment; a single similarity transform cannot correct parallax
+for every depth in a three-dimensional scene.
+
+Timing uses a bounded buffer and nearest **arrival-time** pairing, with optional
+RGB time offset and tolerance. This is software pairing, not hardware-synchronised
+exposure. Unmatched/stale RGB frames fall back to the thermal image with a notice.
+RGB starts only when requested; closing the alignment panel does not stop it.
+Use **Stop RGB** to release the ordinary camera.
 
 ## Measurement tools
 

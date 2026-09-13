@@ -29,7 +29,14 @@ final class ThermalCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     /// Called on `queue` with one frame's worth of raw 16-bit values,
     /// width*fullHeight of them (image rows first, then metadata rows).
-    var onFrame: (([UInt16]) -> Void)?
+    private var frameHandler: (([UInt16]) -> Void)?
+    /// Set from outside the frame queue. Replacing the callback also drains
+    /// the previous handler before returning, so OFF cannot publish late frames.
+    var onFrame: (([UInt16]) -> Void)? {
+        get { queue.sync { frameHandler } }
+        set { queue.sync { frameHandler = newValue } }
+    }
+    private(set) var frameArrivalTime: TimeInterval = 0
 
     enum CaptureError: LocalizedError {
         case deviceNotFound
@@ -82,6 +89,11 @@ final class ThermalCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     func start() throws {
+        guard !session.isRunning else { return }
+        // Release any partial configuration left by an unsuccessful start.
+        stop()
+        var started = false
+        defer { if !started { stop() } }
         guard let device = ThermalCapture.findDevice() else { throw CaptureError.deviceNotFound }
 
         let input = try AVCaptureDeviceInput(device: device)
@@ -100,15 +112,24 @@ final class ThermalCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         session.addOutput(output)
 
         session.startRunning()
+        guard session.isRunning else { throw CaptureError.cannotAddInput }
+        started = true
     }
 
     func stop() {
         if session.isRunning { session.stopRunning() }
+        for output in session.outputs {
+            (output as? AVCaptureVideoDataOutput)?.setSampleBufferDelegate(nil, queue: nil)
+            session.removeOutput(output)
+        }
+        for input in session.inputs { session.removeInput(input) }
+        queue.sync {} // Finish the last in-flight frame before clearing live state.
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        guard let handler = onFrame,
+        frameArrivalTime = ProcessInfo.processInfo.systemUptime
+        guard let handler = frameHandler,
               let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
         CVPixelBufferLockBaseAddress(pixels, .readOnly)

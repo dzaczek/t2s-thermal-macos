@@ -23,6 +23,11 @@ anything first. Also a reliable way to derail a standup.
 
 ## What you get
 
+* Native Inspection, Electronics, Analysis and Presentation workspaces, with
+  direct access to measurement and capture controls
+* An IR ON/OFF button available in every workspace
+* Beta RGB/thermal composition with manual alignment and a motion-assisted
+  alignment workflow; see the [alignment guide](docs/using.md#aligning-an-ordinary-camera-with-thermal-video-15-beta)
 * Six palettes, with the temperature scale locked to a range you set or
   stretched to whatever is in frame
 * Spots, boxes and lines. A box gives you min, average and max, and marks which

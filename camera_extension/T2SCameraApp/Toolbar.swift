@@ -27,11 +27,7 @@ extension ThermalViewController: NSToolbarDelegate {
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [ToolbarID.tool, ToolbarID.rotate, ToolbarID.palette, ToolbarID.markers,
-         ToolbarID.plot, ToolbarID.range,
-         .flexibleSpace,
-         ToolbarID.track, ToolbarID.calibrate, ToolbarID.nuc,
-         .space,
+        [.flexibleSpace, ToolbarID.calibrate, ToolbarID.nuc, .space,
          ToolbarID.photo, ToolbarID.record]
     }
 
@@ -168,10 +164,12 @@ extension ThermalViewController: NSToolbarDelegate {
     // MARK: - Actions
 
     @objc func toolbarPaletteChanged(_ sender: NSPopUpButton) {
+        defer { syncToolbar() }
         palette = Palette(rawValue: sender.indexOfSelectedItem) ?? .ironbow
     }
 
     @objc func toolbarToolChanged(_ sender: NSSegmentedControl) {
+        defer { syncToolbar() }
         dragTool = DragTool(rawValue: sender.selectedSegment) ?? .area
     }
 
@@ -184,17 +182,20 @@ extension ThermalViewController: NSToolbarDelegate {
     }
 
     @objc func toolbarMarkersChanged(_ sender: NSSegmentedControl) {
+        defer { syncToolbar() }
         showMax = sender.isSelected(forSegment: 0)
         showMin = sender.isSelected(forSegment: 1)
         showCentre = sender.isSelected(forSegment: 2)
     }
 
     @objc func toolbarPlotChanged(_ sender: NSPopUpButton) {
+        defer { syncToolbar() }
         chartPosition = ChartPosition(rawValue: sender.indexOfSelectedItem) ?? .off
         view.needsLayout = true
     }
 
     @objc func toolbarRangeChanged(_ sender: NSSegmentedControl) {
+        defer { syncToolbar() }
         manualRange = sender.selectedSegment == 1
         updateRangeEnabled()
     }
@@ -210,6 +211,7 @@ extension ThermalViewController: NSToolbarDelegate {
     /// Pushes state back into the toolbar, so changing something from the menu
     /// or a keyboard shortcut does not leave the buttons showing stale values.
     func syncToolbar() {
+        syncWorkspace()
         toolbarTool?.setSelected(true, forSegment: dragTool.rawValue)
         toolbarPalette?.selectItem(at: palette.rawValue)
         toolbarPlot?.selectItem(at: chartPosition.rawValue)

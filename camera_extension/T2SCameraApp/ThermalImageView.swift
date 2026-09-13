@@ -14,6 +14,9 @@ final class ThermalImageView: NSView {
     var image: CGImage? {
         didSet { needsDisplay = true }
     }
+    var emptyMessage = "Waiting for IR camera…" {
+        didSet { needsDisplay = true }
+    }
 
     /// Live drag rectangle, in view coordinates.
     private var dragOrigin: CGPoint?
@@ -39,6 +42,14 @@ final class ThermalImageView: NSView {
         if let image {
             ctx.interpolationQuality = .high
             ctx.draw(image, in: imageRect)
+        } else {
+            let message = NSAttributedString(string: emptyMessage, attributes: [
+                .font: NSFont.systemFont(ofSize: 17, weight: .medium),
+                .foregroundColor: NSColor.white
+            ])
+            let size = message.size()
+            message.draw(at: NSPoint(x: (bounds.width - size.width) / 2,
+                                     y: (bounds.height - size.height) / 2))
         }
         if let a = dragOrigin, let b = dragCurrent {
             ctx.setStrokeColor(NSColor.white.cgColor)
